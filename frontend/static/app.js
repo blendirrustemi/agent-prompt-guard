@@ -5,6 +5,8 @@ const counter = document.querySelector("#char-count");
 const error = document.querySelector("#form-error");
 const messages = document.querySelector("#messages");
 const workspace = document.querySelector("#workspace");
+const composerArea = document.querySelector(".composer-area");
+const intro = document.querySelector("#intro");
 const maxLength = Number(form.dataset.maxLength);
 let sending = false;
 
@@ -22,7 +24,23 @@ function showError(message = "") {
     error.hidden = !message;
 }
 
-function addPrompt(prompt) {
+function addPrompt(prompt, origin) {
+    const firstPrompt = !workspace.classList.contains("has-messages");
+    const animateTransition = firstPrompt && typeof form.animate === "function"
+        && !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let fadingIntro;
+    if (animateTransition) {
+        const rect = intro.getBoundingClientRect();
+        fadingIntro = intro.cloneNode(true);
+        fadingIntro.removeAttribute("id");
+        fadingIntro.classList.add("intro-transition");
+        fadingIntro.setAttribute("aria-hidden", "true");
+        fadingIntro.inert = true;
+        Object.assign(fadingIntro.style, {
+            left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`,
+        });
+        document.body.append(fadingIntro);
+    }
     const article = document.createElement("article");
     article.className = "message";
     article.dataset.promptId = prompt.id;
@@ -43,6 +61,27 @@ function addPrompt(prompt) {
     messages.append(article);
     workspace.classList.add("has-messages");
     messages.scrollTop = messages.scrollHeight;
+
+    if (animateTransition) {
+        const composerTarget = form.getBoundingClientRect();
+        const messageTarget = text.getBoundingClientRect();
+        const motion = { duration: 700, easing: "cubic-bezier(0.22, 1, 0.36, 1)" };
+        composerArea.animate([
+            { transform: `translate(${origin.composer.left - composerTarget.left}px, ${origin.composer.top - composerTarget.top}px)` },
+            { transform: "translate(0, 0)" },
+        ], motion);
+        article.animate([
+            { transform: `translate(${origin.input.left - messageTarget.left}px, ${origin.input.top - messageTarget.top}px)`, opacity: 0 },
+            { opacity: 1, offset: 0.2 },
+            { transform: "translate(0, 0)", opacity: 1 },
+        ], motion);
+        meta.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 250, delay: 350, fill: "backwards" });
+        const fade = fadingIntro.animate([
+            { transform: "translateY(0)", opacity: 1 },
+            { transform: "translateY(-20px)", opacity: 0 },
+        ], { duration: 250, easing: "ease-out", fill: "forwards" });
+        fade.finished.then(() => fadingIntro.remove(), () => fadingIntro.remove());
+    }
 }
 
 async function api(url, options = {}) {
@@ -85,8 +124,13 @@ form.addEventListener("submit", async (event) => {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ text: input.value }),
         });
-        addPrompt(prompt);
+        const origin = {
+            composer: form.getBoundingClientRect(),
+            input: input.getBoundingClientRect(),
+        };
         input.value = "";
+        refreshInput();
+        addPrompt(prompt, origin);
     } catch (failure) {
         const message = failure.name === "AbortError" || failure instanceof TypeError
             ? "Could not confirm that your prompt was saved. Check your connection and try again."
@@ -98,7 +142,7 @@ form.addEventListener("submit", async (event) => {
         sendButton.setAttribute("aria-label", "Send prompt");
         form.removeAttribute("aria-busy");
         refreshInput();
-        input.focus();
+        input.focus({ preventScroll: true });
     }
 });
 

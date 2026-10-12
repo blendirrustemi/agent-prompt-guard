@@ -20,13 +20,12 @@ button, textarea { font: inherit; }
 .brand { display: flex; align-items: center; gap: 10px; color: #dedee8; text-decoration: none; font-size: 17px; font-weight: 600; letter-spacing: -.4px; }
 .brand-icon { width: 28px; height: 28px; color: #b3b5cb; }
 .project-tag { font-size: 10px; font-weight: 500; letter-spacing: 1px; color: var(--muted); border: 1px solid #2b2d38; border-radius: 5px; padding: 4px 6px; margin-left: 3px; }
-.workspace-label { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
-.workspace-dot { width: 6px; height: 6px; border-radius: 50%; background: #9c9bbd; box-shadow: 0 0 9px #aba9fa30; }
 .workspace { width: min(100% - 64px, 920px); margin: 0 auto; }
-.intro { text-align: center; padding-top: clamp(60px, 17vh, 180px); padding-bottom: 48px; }
+.intro { text-align: center; padding-top: clamp(60px, 17vh, 180px); padding-bottom: 72px; }
+.intro-transition { position: fixed; pointer-events: none; z-index: 1; }
 .eyebrow { color: #9190a6; font-size: 10px; letter-spacing: 2.1px; font-weight: 600; margin: 0 0 19px; }
 h1 { margin: 0; font-size: clamp(27px, 3.4vw, 38px); font-weight: 500; line-height: 1.3; letter-spacing: -1.3px; }
-.intro-copy { color: var(--muted); font-size: 14px; line-height: 1.6; margin: 13px 0 0; }
+.composer-area { padding-bottom: 26px; }
 
 /* Corner lights sit behind the opaque input surface. */
 .composer-halo { position: relative; isolation: isolate; }
@@ -44,22 +43,25 @@ h1 { margin: 0; font-size: clamp(27px, 3.4vw, 38px); font-weight: 500; line-heig
 .composer-halo:focus-within::before { opacity: 1; }
 .composer {
     position: relative;
+    display: flex;
+    align-items: flex-end;
+    gap: 12px;
     border: 1px solid transparent;
-    border-radius: 30px;
-    padding: 25px 25px 20px;
+    border-radius: 24px;
+    padding: 14px 18px;
     background:
         linear-gradient(#080a0f, #080a0f) padding-box,
         linear-gradient(135deg, #ffd2b7 0%, #e78376 21%, #55415f 48%, #424870 70%, #c8edff 100%) border-box;
 }
-textarea { display: block; border: 0; outline: none; resize: none; width: 100%; min-height: 78px; max-height: 200px; padding: 2px 3px 12px; background: transparent; color: #ebedf5; caret-color: #d6d9e6; font-size: 18px; line-height: 1.6; }
+textarea { display: block; flex: 1; min-width: 0; border: 0; outline: none; resize: none; width: 100%; min-height: 40px; max-height: 200px; padding: 6px 3px; background: transparent; color: #ebedf5; caret-color: #d6d9e6; font-size: 18px; line-height: 1.6; }
 textarea::placeholder { color: #989ca8; opacity: 1; }
-.composer-footer { display: flex; justify-content: flex-end; align-items: center; padding-top: 8px; }
+.composer-footer { display: flex; align-items: center; flex-shrink: 0; }
 .send-button {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 44px;
-    height: 44px;
+    width: 40px;
+    height: 40px;
     flex-shrink: 0;
     border: 1px solid #ffffff25;
     border-radius: 50%;
@@ -74,12 +76,9 @@ textarea::placeholder { color: #989ca8; opacity: 1; }
 .send-button:disabled { opacity: .72; cursor: default; }
 .send-button:focus-visible, .brand:focus-visible { outline: 2px solid var(--accent); outline-offset: 5px; }
 .send-button svg { width: 23px; height: 23px; }
-.composer-meta { display: flex; justify-content: space-between; align-items: center; gap: 14px; margin: 18px 7px 0; position: relative; }
-.input-hint { color: #969aaa; font-size: 11px; }
-.hint-divider { padding: 0 4px; }
+.composer-meta { display: flex; justify-content: flex-end; align-items: center; margin: 12px 7px 0; position: relative; }
 .char-count { color: #969aaa; font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .char-count.over-limit { color: #ffab99; }
-.footnote { color: #818593; font-size: 11px; text-align: center; margin: 19px 0 26px; }
 .form-error { margin: 13px 7px 0; color: #ffb3a5; font-size: 13px; line-height: 1.5; }
 .messages { display: none; }
 .workspace.has-messages { display: flex; flex-direction: column; height: calc(100dvh - 86px); }
@@ -94,23 +93,16 @@ textarea::placeholder { color: #989ca8; opacity: 1; }
 @media (max-width: 600px) {
     .header { height: 72px; padding: 0 24px; }
     .brand { font-size: 15px; gap: 7px; }
-    .workspace-label { font-size: 0; gap: 0; }
-    .workspace-dot { width: 7px; height: 7px; }
     .workspace { width: calc(100% - 48px); }
     .workspace.has-messages { height: calc(100dvh - 72px); }
-    .intro { padding-top: 15vh; padding-bottom: 36px; }
-    .composer { padding: 20px 20px 17px; border-radius: 25px; }
+    .intro { padding-top: 15vh; padding-bottom: 56px; }
+    .composer { padding: 12px 15px; border-radius: 22px; }
     .composer-halo::before, .composer-halo::after { border-radius: 27px; }
     .composer-halo::after { inset: -7px; filter: blur(25px); opacity: .32; }
     textarea { font-size: 16px; }
-    .composer-meta { gap: 8px; margin-top: 16px; }
-    .input-hint { font-size: 10px; }
     .char-count { font-size: 9px; }
-    .hint-divider { padding: 0 1px; }
-    .footnote { font-size: 10px; }
     .message-text { max-width: 95%; }
 }
-@media (max-width: 360px) { .input-hint { max-width: 175px; line-height: 1.6; } }
 @media (prefers-reduced-motion: reduce) {
     .composer-halo::before, .send-button { transition: none; }
 }
