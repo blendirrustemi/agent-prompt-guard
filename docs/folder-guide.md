@@ -11,7 +11,7 @@
 | `backend/tests/` | Route and database checks. |
 | `docs/` | Architecture, work plan, and team guides. |
 
-Today: **prompt box → Flask → PostgreSQL**, with each prompt marked `pending`. Run commands from the project root; see [README](../README.md). Keep `.env` local and preserve `tmp/postgres-dev/`, which holds the saved database.
+Today: **prompt box → Flask → PostgreSQL**, with each prompt marked `pending`. Refresh starts an empty chat while submitted prompts stay in the database. Run commands from the project root; see [README](../README.md). Keep `.env` local and preserve `tmp/postgres-dev/`, which holds the saved database.
 
 ## Next steps
 

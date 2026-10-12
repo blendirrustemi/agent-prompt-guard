@@ -2,7 +2,7 @@
 
 New to the project? Read the short [folder guide for the team](docs/folder-guide.md) for the current structure and where upcoming features belong.
 
-First implementation milestone: a local Flask page with a chat-style prompt box and PostgreSQL storage. Enter a prompt, press Enter or the send button, and see its pending check status. Shift + Enter adds a new line. The latest 50 submissions reappear after refresh.
+First implementation milestone: a local Flask page with a chat-style prompt box and PostgreSQL storage. Enter a prompt, press Enter or the send button, and see its pending check status. Shift + Enter adds a new line. Refresh starts an empty chat; submitted prompts remain stored in PostgreSQL for later guard processing.
 
 This milestone makes no LLM, Kafka, or external API calls. All page assets are local. Prompts are stored without classification and are never forwarded to an agent. This is one shared local workspace without user accounts or separate conversations.
 
@@ -66,7 +66,7 @@ This is a separate database on local port 55432. The Compose password is a local
 
 The two inserts commit in one transaction. The guard result references its prompt through a foreign key. Later, a guard worker can read pending rows, run a classifier, and update the decision to `allow`, `block`, or `review`. Model fields remain null until an actual check is implemented.
 
-Input must be non-empty text of at most 8,000 characters. SQL parameters store submitted text literally, and the browser renders it as text. Failed submissions preserve the input and display an error. The initial UI does not poll for future decision changes; refresh loads current saved statuses.
+Input must be non-empty text of at most 8,000 characters. SQL parameters store submitted text literally, and the browser renders it as text. Failed submissions preserve the input and display an error. The initial UI does not poll for future decision changes. Refresh clears the visible messages and input without deleting database records; saved history remains available through `GET /api/prompts`.
 
 ## Files and endpoints
 
