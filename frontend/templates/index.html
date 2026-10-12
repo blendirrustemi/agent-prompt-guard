@@ -33,7 +33,7 @@
 
         <div class="composer-area">
             <div class="composer-halo">
-                <form class="composer" id="prompt-form" data-max-length="{{ max_length }}">
+                <form class="composer" id="prompt-form" data-max-length="{{ max_length }}" autocomplete="off">
                     <label class="sr-only" for="prompt">Your prompt</label>
                     <textarea id="prompt" name="prompt" rows="2" placeholder="Ask anything…" autofocus aria-describedby="input-hint form-error"></textarea>
                     <div class="composer-footer">
@@ -48,7 +48,7 @@
                 <span class="char-count" id="char-count">0 / 8,000</span>
             </div>
             <p class="form-error" id="form-error" role="alert" hidden></p>
-            <p class="footnote">Prompts are saved for a future guard check.</p>
+            <p class="footnote">Prompts stay saved for future checks. Refresh to start fresh.</p>
         </div>
     </main>
 </body>

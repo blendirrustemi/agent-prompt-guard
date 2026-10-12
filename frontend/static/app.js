@@ -7,13 +7,12 @@ const messages = document.querySelector("#messages");
 const workspace = document.querySelector("#workspace");
 const maxLength = Number(form.dataset.maxLength);
 let sending = false;
-let loading = true;
 
 function refreshInput() {
     const length = Array.from(input.value).length;
     counter.textContent = `${length.toLocaleString()} / ${maxLength.toLocaleString()}`;
     counter.classList.toggle("over-limit", length > maxLength);
-    sendButton.disabled = loading || sending || !input.value.trim() || length > maxLength;
+    sendButton.disabled = sending || !input.value.trim() || length > maxLength;
     input.style.height = "auto";
     input.style.height = `${Math.min(input.scrollHeight, 200)}px`;
 }
@@ -103,16 +102,5 @@ form.addEventListener("submit", async (event) => {
     }
 });
 
-async function loadPrompts() {
-    try {
-        const { prompts } = await api("/api/prompts");
-        prompts.forEach(addPrompt);
-    } catch {
-        showError("Could not load saved prompts. Check that local storage is running, then refresh.");
-    } finally {
-        loading = false;
-        refreshInput();
-    }
-}
-
-loadPrompts();
+form.reset();
+refreshInput();
