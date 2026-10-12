@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Prompt Guard</title>
+    <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+</head>
+<body>
+    <header class="header">
+        <a class="brand" href="/" aria-label="Prompt Guard home">
+            <svg class="brand-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M12 3 4.5 6v5.2c0 4.7 3.1 8 7.5 9.8 4.4-1.8 7.5-5.1 7.5-9.8V6L12 3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+                <path d="m8.5 12 2.3 2.3 4.7-4.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span>Prompt Guard</span>
+            <span class="project-tag">PIJD</span>
+        </a>
+        <span class="workspace-label"><span class="workspace-dot"></span>Local workspace</span>
+    </header>
+
+    <main class="workspace" id="workspace">
+        <section class="intro" id="intro">
+            <p class="eyebrow">START WITH A PROMPT</p>
+            <h1>What would you like to check?</h1>
+            <p class="intro-copy">A simple space to submit your prompts.</p>
+        </section>
+
+        <section class="messages" id="messages" aria-label="Submitted prompts" aria-live="polite" aria-relevant="additions"></section>
+
+        <div class="composer-area">
+            <div class="composer-halo">
+                <form class="composer" id="prompt-form" data-max-length="{{ max_length }}">
+                    <label class="sr-only" for="prompt">Your prompt</label>
+                    <textarea id="prompt" name="prompt" rows="2" placeholder="Ask anything…" autofocus aria-describedby="input-hint form-error"></textarea>
+                    <div class="composer-footer">
+                        <button class="send-button" id="send-button" type="submit" aria-label="Send prompt" disabled>
+                            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m20.4 3.6-5.8 16.2c-.3.8-1.4.9-1.8.1l-3-5.7-5.7-3c-.8-.4-.7-1.5.1-1.8l16.2-5.8Z" fill="currentColor"/><path d="m10 14 5-5" stroke="#a679f2" stroke-width="1.5" stroke-linecap="round"/></svg>
+                        </button>
+                    </div>
+                </form>
+            </div>
+            <div class="composer-meta">
+                <span class="input-hint" id="input-hint">Enter to send <span class="hint-divider">·</span> Shift + Enter for a new line</span>
+                <span class="char-count" id="char-count">0 / 8,000</span>
+            </div>
+            <p class="form-error" id="form-error" role="alert" hidden></p>
+            <p class="footnote">Prompts are saved for a future guard check.</p>
+        </div>
+    </main>
+</body>
+</html>
