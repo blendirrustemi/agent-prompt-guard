@@ -77,13 +77,13 @@ def prepare_dataset():
     df = pd.concat(frames, ignore_index=True)
 
     # Assign attack groups to malicious prompts
-    df["attack_group"] = df["category"].map(CATEGORY_MAPPING)
+    df["attack_group"] = df["category"].map(category_mapping)
     df.loc[df["label"] == 0, "attack_group"] = None
 
     # Flag records selected for baseline modelling
     df["include_in_baseline"] = (
         df["source"].eq("neuralchemy_v1")
-        & ~df["category"].isin(EXCLUDED_CATEGORIES)
+        & ~df["category"].isin(excluded_categories)
     )
 
     df["source_dataset"] = "neuralchemy"
