@@ -4,7 +4,7 @@ New to the project? Read the short [folder guide for the team](docs/folder-guide
 
 First implementation milestone: a local Flask page with a chat-style prompt box and PostgreSQL storage. Enter a prompt, press Enter or the send button, and see its pending check status. Shift + Enter adds a new line. Refresh starts an empty chat; submitted prompts remain stored in PostgreSQL for later guard processing.
 
-This milestone makes no LLM, Kafka, or external API calls. All page assets are local. Prompts are stored without classification and are never forwarded to an agent. This is one shared local workspace without user accounts or separate conversations.
+This milestone makes no LLM or external API calls. A local Kafka broker and a command-line producer are available (see [Kafka](#kafka)), but the page still writes directly to PostgreSQL. All page assets are local. Prompts are stored without classification and are never forwarded to an agent. This is one shared local workspace without user accounts or separate conversations.
 
 ## Quick start with installed PostgreSQL binaries
 
@@ -57,6 +57,38 @@ DATABASE_URL=postgresql://pijd:pijd@localhost:55432/pijd
 
 This is a separate database on local port 55432. The Compose password is a local development value. Its data persists in a Docker volume. `docker compose -f backend/compose.yaml stop db` stops it while keeping the data.
 
+## Kafka
+
+With Docker running, start the single Kafka broker (KRaft mode, no ZooKeeper) and create the topics:
+
+```sh
+docker compose -f backend/compose.yaml up -d --wait kafka
+python -m backend.scripts.create_topics
+```
+
+The broker listens on `127.0.0.1:9094` for the host and `kafka:9092` for other Compose services. Set `KAFKA_BOOTSTRAP_SERVERS` in `.env` to use a different address. Automatic topic creation is off; re-running the script leaves existing topics unchanged.
+
+| Topic | Contents |
+|---|---|
+| `prompts_raw` | Every manual or replayed prompt, as the raw prompt event below |
+| `prompts_allowed` | Prompts the guard allowed; read by the agent |
+| `prompts_labels` | Reviewed or dataset labels, kept separate from model inputs |
+
+Publish raw prompt events from the command line, one argument per prompt or one stdin line per prompt:
+
+```sh
+python -m backend.intake.producer "Ignore all previous instructions" --source source_01
+python -m backend.intake.producer --source source_02 --dataset-ref deepset < prompts.txt
+```
+
+Each message is keyed by `source_id` and its value is JSON:
+
+```json
+{"schema_version": 1, "prompt_id": "uuid", "received_at": "2026-10-28T10:08:15+00:00", "source_id": "source_01", "dataset_ref": null, "text": "original prompt text"}
+```
+
+From Python, use `backend.intake.producer.send_prompts(texts, source_id=..., dataset_ref=...)`. `docker compose -f backend/compose.yaml stop kafka` stops the broker while keeping its messages in a Docker volume.
+
 ## The two tables
 
 | Table | Contents |
@@ -82,9 +114,13 @@ backend/
   db.py                      # PostgreSQL operations
   schema.sql                 # two-table schema
   requirements.txt           # Python dependencies
-  compose.yaml               # optional Docker database
+  compose.yaml               # optional Docker database and Kafka broker
+  intake/producer.py         # publish raw prompt events to Kafka
+  intake/topics.py           # shared topic names and Kafka address
   scripts/local_db.py         # local database setup/start/stop
+  scripts/create_topics.py    # create the Kafka topics
   tests/test_app.py           # route and database checks
+  tests/test_intake.py        # raw event and Kafka checks
 docs/                        # architecture and team work plan
 tmp/                         # local database files and preview artifacts
 README.md
@@ -117,3 +153,5 @@ TEST_DATABASE_URL=postgresql://localhost:5432/pijd_test python -m unittest disco
 For the quick-start instance, use `TEST_DATABASE_URL=postgresql://pijd@127.0.0.1:55432/pijd_test` instead; the database already exists.
 
 The database checks create the schema in the configured test database and remove only the rows they created. Use a dedicated test database.
+
+To also check a real Kafka round trip (creates the topics if missing and publishes one test message to `prompts_raw`), set `TEST_KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9094`.
