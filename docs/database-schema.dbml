@@ -3,7 +3,7 @@
 
 Project agent_prompt_guard {
   database_type: 'PostgreSQL'
-  Note: 'Prompts submitted through the web UI and the guard classifier verdict for each one.'
+  Note: 'Prompts submitted through the web UI, the guard classifier verdict for each one, and the imported datasets.'
 }
 
 Table prompts {
@@ -11,9 +11,11 @@ Table prompts {
   text text [not null, note: 'Non-blank, at most 8000 characters']
   source text [not null, default: 'web']
   created_at timestamptz [not null, default: `now()`]
+  dataset_prompt_id uuid [ref: > dataset_prompts.id, note: 'ON DELETE SET NULL; NULL for web prompts, set for replayed dataset rows']
 
   indexes {
     created_at [name: 'prompts_created_at_idx', note: 'DESC; used to list the newest prompts']
+    dataset_prompt_id [name: 'prompts_dataset_prompt_id_idx']
   }
 }
 
@@ -25,4 +27,23 @@ Table guard_results {
   reason text
   model_version text
   checked_at timestamptz [note: 'Set when the classifier saves its result']
+}
+
+// Imported training and evaluation data; replayed rows are linked from prompts.dataset_prompt_id.
+Table dataset_prompts {
+  id uuid [pk, default: `gen_random_uuid()`, note: 'Importers pass a stable uuid5 so re-imports skip existing rows']
+  text text [not null, note: 'Non-blank; no length limit']
+  label smallint [not null, note: '1 = malicious, 0 = benign']
+  source_dataset text [not null, note: "One of 'neuralchemy', 'deepset', 'jackhhao'"]
+  source text [note: 'Upstream source inside the dataset, e.g. neuralchemy_v1']
+  split text [not null, note: 'e.g. train, validation, test']
+  category text [note: "Dataset's own category, e.g. control, chain_of_thought"]
+  attack_group text [note: 'Attack type or family (B3)']
+  group_id text [note: 'Template group; one group stays in one split']
+  include_in_baseline boolean [not null, default: false, note: 'Rows used to train the B1/B2 baselines']
+  metadata jsonb [not null, default: `'{}'::jsonb`, note: 'Other original fields']
+
+  indexes {
+    (source_dataset, split) [name: 'dataset_prompts_source_split_idx']
+  }
 }

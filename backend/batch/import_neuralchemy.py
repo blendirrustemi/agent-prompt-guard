@@ -154,7 +154,8 @@ def import_to_postgres(df, database_url):
 
 
 def main():
-    load_dotenv(BACKEND_DIR / ".env")
+    # .env lives in the project root, as for Flask
+    load_dotenv(BACKEND_DIR.parent / ".env")
     database_url = os.getenv("DATABASE_URL")
 
     if not database_url:

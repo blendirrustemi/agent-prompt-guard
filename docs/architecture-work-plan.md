@@ -180,18 +180,20 @@ The weekly retraining command reads only eligible reviewed examples, trains cand
 
 Agree on these before independent coding.
 
-### Raw prompt event: `prompts.raw`
+### Raw prompt event: `prompts_raw`
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "prompt_id": "uuid",
-  "received_at": "UTC timestamp",
-  "source_id": "source_01",
-  "dataset_ref": "optional dataset and row identifier",
-  "text": "original prompt text"
+  "text": "original prompt text",
+  "source": "source_01",
+  "created_at": "UTC timestamp",
+  "dataset_prompt_id": "optional dataset_prompts.id (UUID)"
 }
 ```
+
+Each field maps onto a `prompts` column (`prompt_id` is stored as `id`); `db.save_raw_event` stores the event without extra columns.
 
 The UI generates IDs and timestamps; they are metadata, not extracted from user text. Feature extraction uses a separate normalized copy. Each stage consumes the shared event/result object and adds agreed fields; PostgreSQL helpers handle writes.
 
@@ -203,7 +205,7 @@ The UI generates IDs and timestamps; they are metadata, not extracted from user 
 
 ### PostgreSQL tables
 
-- `dataset_prompts`: imported static data, labels, source metadata, template group, split.
+- `dataset_prompts`: imported static data from NeurAlchemy, deepset and jackhhao: text, binary label, source dataset and source, split, category, attack group, template group (`group_id`), baseline-training flag, and other original fields as JSON metadata. Implemented in `backend/schema.sql`. Replayed prompts link back through `prompts.dataset_prompt_id`, so the evaluator joins labels after the guard has decided.
 - `prompt_events`: live/replayed inputs, features, model scores, versions, final decisions.
 - `review_labels`: human/evaluator labels, label origin, and eligibility for retraining.
 - `alerts`: source bursts, style shifts, and labeled error-drift alerts.
