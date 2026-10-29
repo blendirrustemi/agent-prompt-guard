@@ -23,6 +23,7 @@ def serialize_prompt(row):
         "text": row["text"],
         "created_at": row["created_at"].isoformat(),
         "decision": row["decision"],
+        "dataset_prompt_id": str(row["dataset_prompt_id"]) if row["dataset_prompt_id"] else None,
     }
 
 
@@ -38,12 +39,15 @@ def serialize_guard_result(row):
     }
 
 
-def save_prompt(database_url, text):
-    prompt_id = uuid4()
+def save_prompt(database_url, text, dataset_prompt_id=None, source="web", prompt_id=None, created_at=None):
+    """Store a prompt; pass dataset_prompt_id when it was replayed from dataset_prompts."""
+    prompt_id = prompt_id or uuid4()
     with connect(database_url) as conn:
         row = conn.execute(
-            "INSERT INTO prompts (id, text) VALUES (%s, %s) RETURNING id, text, created_at",
-            (prompt_id, text),
+            """INSERT INTO prompts (id, text, source, created_at, dataset_prompt_id)
+               VALUES (%s, %s, %s, COALESCE(%s, NOW()), %s)
+               RETURNING id, text, created_at, dataset_prompt_id""",
+            (prompt_id, text, source, created_at, dataset_prompt_id),
         ).fetchone()
         conn.execute("INSERT INTO guard_results (prompt_id) VALUES (%s)", (prompt_id,))
     # The context manager commits both inserts together before reporting success.
@@ -51,10 +55,22 @@ def save_prompt(database_url, text):
     return serialize_prompt(row)
 
 
+def save_raw_event(database_url, event):
+    """Store a `prompts_raw` Kafka event; every event field maps onto an existing prompts column."""
+    return save_prompt(
+        database_url,
+        event["text"],
+        dataset_prompt_id=event["dataset_prompt_id"],
+        source=event["source"],
+        prompt_id=event["prompt_id"],
+        created_at=event["created_at"],
+    )
+
+
 def list_prompts(database_url):
     with connect(database_url) as conn:
         rows = conn.execute(
-            """SELECT p.id, p.text, p.created_at, g.decision
+            """SELECT p.id, p.text, p.created_at, p.dataset_prompt_id, g.decision
                FROM prompts AS p
                JOIN guard_results AS g ON g.prompt_id = p.id
                ORDER BY p.created_at DESC, p.id DESC
