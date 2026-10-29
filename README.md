@@ -8,7 +8,7 @@ This milestone makes no LLM or external API calls. A local Kafka broker and a co
 
 ## Quick start with installed PostgreSQL binaries
 
-After installing the Python requirements below, this command starts an isolated local PostgreSQL instance on port 55432, creates the two tables, and writes the connection to `.env` if that file does not already exist:
+After installing the Python requirements below, this command starts an isolated local PostgreSQL instance on port 55432, creates the project tables, and writes the connection to `.env` if that file does not already exist:
 
 ```sh
 python3 backend/scripts/local_db.py
@@ -78,27 +78,75 @@ Publish raw prompt events from the command line, one argument per prompt or one 
 
 ```sh
 python -m backend.intake.producer "Ignore all previous instructions" --source source_01
-python -m backend.intake.producer --source source_02 --dataset-ref deepset < prompts.txt
+python -m backend.intake.producer "Ignore all previous instructions" --source source_02 --dataset-prompt-id <dataset_prompts.id>
 ```
 
-Each message is keyed by `source_id` and its value is JSON:
+Each message is keyed by `source` and its value is JSON:
 
 ```json
-{"schema_version": 1, "prompt_id": "uuid", "received_at": "2026-10-28T10:08:15+00:00", "source_id": "source_01", "dataset_ref": null, "text": "original prompt text"}
+{"schema_version": 2, "prompt_id": "uuid", "text": "original prompt text", "source": "source_01", "created_at": "2026-10-28T10:08:15+00:00", "dataset_prompt_id": null}
 ```
 
-From Python, use `backend.intake.producer.send_prompts(texts, source_id=..., dataset_ref=...)`. `docker compose -f backend/compose.yaml stop kafka` stops the broker while keeping its messages in a Docker volume.
+The fields match the `prompts` table, so storing a message needs no extra columns:
 
-## The two tables
+| Event field | `prompts` column |
+|---|---|
+| `prompt_id` | `id` |
+| `text` | `text` |
+| `source` | `source` (`web` for the page, `source_01`… for simulated replay sources) |
+| `created_at` | `created_at` |
+| `dataset_prompt_id` | `dataset_prompt_id` (UUID of the `dataset_prompts` row, or `null`) |
+
+`schema_version` describes the message format and is not stored. Labels are never part of the message. From Python, use `backend.intake.producer.send_prompts(texts, source=..., dataset_prompt_id=...)` to publish and `db.save_raw_event(url, event)` to store a received message with its `pending` guard result. `docker compose -f backend/compose.yaml stop kafka` stops the broker while keeping its messages in a Docker volume.
+
+## The tables
 
 | Table | Contents |
 |---|---|
-| `prompts` | UUID, original prompt text, source (`web`), creation time |
+| `prompts` | UUID, original prompt text, source (`web`), creation time, and `dataset_prompt_id` linking a replayed prompt to its `dataset_prompts` row |
 | `guard_results` | One record per prompt; decision initially `pending`; optional score, attack type, reason, model version, and check time |
+| `dataset_prompts` | Imported rows from all three datasets (NeurAlchemy, deepset, jackhhao) for training and evaluation |
 
-The two inserts commit in one transaction. The guard result references its prompt through a foreign key. Later, a guard worker can read pending rows, run a classifier, and update the decision to `allow`, `block`, or `review`. Model fields remain null until an actual check is implemented.
+See [docs/database-schema.dbml](docs/database-schema.dbml) for the full diagram.
+
+The `prompts` and `guard_results` inserts commit in one transaction. The guard result references its prompt through a foreign key. Later, a guard worker can read pending rows, run a classifier, and update the decision to `allow`, `block`, or `review`. Model fields remain null until an actual check is implemented.
 
 Input must be non-empty text of at most 8,000 characters. SQL parameters store submitted text literally, and the browser renders it as text. Failed submissions preserve the input and display an error. The initial UI does not poll for future decision changes. Refresh clears the visible messages and input without deleting database records; saved history remains available through `GET /api/prompts`.
+
+### `dataset_prompts`
+
+`dataset_prompts` holds every row of the three datasets, so models are trained and evaluated from one place:
+
+| Column | Type | Meaning |
+|---|---|---|
+| `id` | `UUID` | Importers should pass a stable UUID (for example `uuid5` of dataset, split and row number) so re-running an import with `ON CONFLICT (id) DO NOTHING` skips rows already stored; otherwise the database generates a random one |
+| `text` | `TEXT` | Original prompt text; must not be blank. No length limit, because some dataset prompts are long |
+| `label` | `SMALLINT` | `1` malicious (injection or jailbreak), `0` benign. Importers convert each dataset's labels to this, for example jackhhao's `jailbreak`/`benign` |
+| `source_dataset` | `TEXT` | `neuralchemy`, `deepset` or `jackhhao` (lowercase) |
+| `source` | `TEXT` | Upstream source inside the dataset, such as NeurAlchemy's `neuralchemy_v1`; optional |
+| `split` | `TEXT` | Partition the row belongs to, such as `train`, `validation` or `test`; required |
+| `category` | `TEXT` | The dataset's own category, such as NeurAlchemy's `control` or `chain_of_thought`; optional |
+| `attack_group` | `TEXT` | Attack type or family, for the attack-type classifier (B3); optional |
+| `group_id` | `TEXT` | Template group; rows that share a template stay in the same split; optional |
+| `include_in_baseline` | `BOOLEAN` | `true` for rows used to train the B1/B2 baseline models (cleaned NeurAlchemy `core` data, excluding `control` and `chain_of_thought`); defaults to `false`, so deepset and jackhhao stay held out |
+| `metadata` | `JSONB` | Any other fields from the original dataset row; defaults to `{}` |
+
+An index on `(source_dataset, split)` keeps per-dataset, per-split queries fast.
+
+### Following a dataset prompt into `prompts`
+
+When a dataset row is replayed through the guard, its `prompts` row stores the dataset row's `id` in `prompts.dataset_prompt_id`. Prompts typed in the web UI leave it `NULL`. One dataset row can be replayed many times; each replay is its own `prompts` row pointing to the same dataset row. The database rejects IDs that do not exist, and deleting a dataset row sets the link to `NULL` instead of deleting the live prompt.
+
+In code, pass the ID when storing a replayed prompt: `db.save_prompt(url, text, dataset_prompt_id=row_id)`, where `row_id` is the `dataset_prompts.id` UUID. The replayed event itself carries no label; join afterwards to compare guard decisions with the true labels:
+
+```sql
+SELECT p.id, g.decision, g.malicious_score, d.label, d.source_dataset, d.split
+FROM prompts p
+JOIN guard_results g ON g.prompt_id = p.id
+JOIN dataset_prompts d ON d.id = p.dataset_prompt_id;
+```
+
+`init-db` adds the column to existing databases too, so re-run it after pulling this change.
 
 ## Files and endpoints
 
@@ -112,7 +160,7 @@ backend/
   __init__.py                # Python package
   app.py                     # Flask routes and init-db command
   db.py                      # PostgreSQL operations
-  schema.sql                 # two-table schema
+  schema.sql                 # database schema
   requirements.txt           # Python dependencies
   compose.yaml               # optional Docker database and Kafka broker
   intake/producer.py         # publish raw prompt events to Kafka
@@ -131,7 +179,7 @@ README.md
 
 Endpoints:
 
-- `GET /api/prompts`: latest 50 prompts, in chronological order.
+- `GET /api/prompts`: latest 50 prompts, in chronological order, each with its `dataset_prompt_id` (`null` for web prompts).
 - `POST /api/prompts`: JSON `{ "text": "your prompt" }`; returns the saved prompt.
 - `docs/architecture-work-plan.md`: broader project proposal. This Flask page implements prompt intake; dashboards, classifiers, streaming, and the agent are later milestones.
 
