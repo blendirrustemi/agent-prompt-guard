@@ -9,7 +9,7 @@
 | `backend/` | Flask routes (`app.py`), database helpers (`db.py`), tables (`schema.sql`), dependencies, and Docker configuration. |
 | `backend/scripts/` | Database setup and other runnable utilities. |
 | `backend/tests/` | Route and database checks. |
-| `docs/` | Architecture, work plan, and team guides. |
+| `docs/` | Architecture, work plan, team guides, and the database diagram (`database-schema.dbml`, open in dbdiagram.io). |
 
 Today: **prompt box → Flask → PostgreSQL**, with each prompt marked `pending`. Refresh starts an empty chat while submitted prompts stay in the database. Run commands from the project root; see [README](../README.md). Keep `.env` local and preserve `tmp/postgres-dev/`, which holds the saved database.
 
