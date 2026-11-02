@@ -1,6 +1,49 @@
 name: pijd
 
+x-python: &python
+  image: pijd-python:local
+  pull_policy: never
+  environment:
+    DATABASE_URL: postgresql://pijd:pijd@db:5432/pijd
+    KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+
 services:
+  init:
+    <<: *python
+    # Build the shared image once; web and consumer use this same image.
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    command: ["python", "-m", "backend.scripts.init_stack"]
+    depends_on:
+      db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  web:
+    <<: *python
+    ports:
+      - "127.0.0.1:5050:5050"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5050/', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  consumer:
+    <<: *python
+    command: ["python", "-m", "backend.intake.consumer"]
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    stop_grace_period: 20s
+
   db:
     image: postgres:16
     environment:

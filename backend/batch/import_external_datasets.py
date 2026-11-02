@@ -19,7 +19,8 @@ def process_deepset():
     ds = load_dataset("deepset/prompt-injections", split="train")
     df = pd.DataFrame(ds)
 
-    df['source_dataset'] = 'deepset/prompt-injections'
+    df['source_row_index'] = range(len(df))
+    df['source_dataset'] = 'deepset'
     df['source'] = 'huggingface'
     df['split'] = 'external_test'
     df['category'] = None
@@ -36,8 +37,12 @@ def process_jackhhao():
     ds = load_dataset("jackhhao/jailbreak-classification", split="train")
     df = pd.DataFrame(ds)
 
+    df = df.rename(columns={'prompt': 'text'})
+    df['source_row_index'] = range(len(df))
     df['label'] = df['type'].map({'benign': 0, 'jailbreak': 1})
-    df['source_dataset'] = 'jackhhao/jailbreak-classification'
+    if df['label'].isna().any():
+        raise ValueError("Unknown jackhhao label; expected benign or jailbreak.")
+    df['source_dataset'] = 'jackhhao'
     df['source'] = 'huggingface'
     df['split'] = 'external_test'
     df['category'] = None
@@ -66,14 +71,11 @@ def import_to_postgres(df, database_url):
 
     records = []
 
-    # Track the row index for stable UUID generation
-    df = df.reset_index(drop=True)
-
-    for idx, row in df.iterrows():
+    for _, row in df.iterrows():
         # Generate a stable ID
         record_id = uuid5(
             NAMESPACE_URL,
-            f"{row['source_dataset']}/{row['split']}/{idx}",
+            f"{row['source_dataset']}/train/{row['source_row_index']}",
         )
 
         records.append((

@@ -9,6 +9,7 @@ const composerArea = document.querySelector(".composer-area");
 const intro = document.querySelector("#intro");
 const maxLength = Number(form.dataset.maxLength);
 let sending = false;
+let submission = null;
 
 function refreshInput() {
     const length = Array.from(input.value).length;
@@ -24,7 +25,7 @@ function showError(message = "") {
     error.hidden = !message;
 }
 
-function addPrompt(prompt, origin) {
+function addPrompt(prompt, origin, deliveryStatus) {
     const firstPrompt = !workspace.classList.contains("has-messages");
     const animateTransition = firstPrompt && typeof form.animate === "function"
         && !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -55,12 +56,15 @@ function addPrompt(prompt, origin) {
     const status = document.createElement("span");
     status.className = "decision";
     const labels = { pending: "Pending check", allow: "Allowed", block: "Blocked", review: "Needs review" };
-    status.textContent = labels[prompt.decision] || "Pending check";
+    status.textContent = deliveryStatus === "queued" ? "Queued" : labels[prompt.decision] || "Pending check";
     meta.append(time, status);
     article.append(text, meta);
     messages.append(article);
     workspace.classList.add("has-messages");
     messages.scrollTop = messages.scrollHeight;
+    if (deliveryStatus === "queued") {
+        setTimeout(() => confirmStorage(prompt.id, status), 2_000);
+    }
 
     if (animateTransition) {
         const composerTarget = form.getBoundingClientRect();
@@ -82,6 +86,20 @@ function addPrompt(prompt, origin) {
         ], { duration: 250, easing: "ease-out", fill: "forwards" });
         fade.finished.then(() => fadingIntro.remove(), () => fadingIntro.remove());
     }
+}
+
+async function confirmStorage(promptId, status) {
+    if (!status.isConnected) return;
+    try {
+        const { prompt } = await api(`/api/prompts/${promptId}`);
+        if (!status.isConnected) return;
+        const labels = { pending: "Pending check", allow: "Allowed", block: "Blocked", review: "Needs review" };
+        status.textContent = labels[prompt.decision] || "Pending check";
+        return;
+    } catch {
+        // Missing rows and temporary read failures leave an acknowledged prompt queued.
+    }
+    if (status.isConnected) setTimeout(() => confirmStorage(promptId, status), 2_000);
 }
 
 async function api(url, options = {}) {
@@ -114,26 +132,30 @@ form.addEventListener("submit", async (event) => {
     if (sendButton.disabled) return;
     sending = true;
     input.readOnly = true;
-    sendButton.setAttribute("aria-label", "Saving prompt");
+    sendButton.setAttribute("aria-label", "Queuing prompt");
     form.setAttribute("aria-busy", "true");
     refreshInput();
     showError();
     try {
-        const { prompt } = await api("/api/prompts", {
+        if (!submission || submission.text !== input.value) {
+            submission = { prompt_id: crypto.randomUUID(), text: input.value };
+        }
+        const { prompt, status } = await api("/api/prompts", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: input.value }),
+            body: JSON.stringify(submission),
         });
         const origin = {
             composer: form.getBoundingClientRect(),
             input: input.getBoundingClientRect(),
         };
         input.value = "";
+        submission = null;
         refreshInput();
-        addPrompt(prompt, origin);
+        addPrompt(prompt, origin, status);
     } catch (failure) {
         const message = failure.name === "AbortError" || failure instanceof TypeError
-            ? "Could not confirm that your prompt was saved. Check your connection and try again."
+            ? "Could not confirm that your prompt was queued. Check your connection and retry."
             : failure.message;
         showError(message);
     } finally {

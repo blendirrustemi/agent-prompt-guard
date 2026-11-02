@@ -4,4 +4,10 @@ version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
     "ipykernel>=7.4.0",
+    "pandas>=2.2,<3",
+    "datasets>=3,<6",
+    "psycopg[binary]==3.3.4",
+    "python-dotenv>=1.0,<2.0",
+    "matplotlib>=3.9,<4",
+    "scikit-learn>=1.5,<2",
 ]

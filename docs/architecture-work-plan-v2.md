@@ -7,6 +7,29 @@ Docker Compose runs the services together: Kafka carries incoming prompts, Pytho
 
 ![Updated architecture: ten guard stages, storage, agent, dashboards and retraining](architecture-diagram.png)
 
+### Implemented intake milestone
+
+The current path is **browser → Flask → `prompts_raw` → one Python consumer → PostgreSQL**.
+Docker Compose starts Flask, the consumer, Kafka and PostgreSQL; a one-shot initialization
+service creates the tables and topics. The consumer is the entry point for future guard stages.
+It currently saves prompts with a `pending` decision and does not classify or invoke an agent.
+
+The diagram and Excel work plan describe the full target. Their `raw_prompts` label maps to
+the implemented `prompts_raw`; `clean_prompts` maps to the reserved `prompts_allowed` topic.
+`prompts_labels` is also reserved. No intermediate topics are needed for this milestone.
+
+The version-two JSON event has `schema_version`, `prompt_id`, `text`, `source`, `created_at`
+and nullable `dataset_prompt_id`. `source` is the source/IP identifier referred to as `source_ip`
+in the work plan: Flask supplies the request IP, while the CLI accepts simulated identifiers.
+Docker may expose a gateway IP for browser requests; simulated sources support later burst tests.
+Ground-truth labels remain in `dataset_prompts`, outside the prompt event.
+
+Flask returns HTTP 202 after Kafka acknowledges a prompt. The consumer stores the prompt and
+pending result atomically, then commits its Kafka offset. Matching redelivery does not overwrite
+a stored decision. Invalid events are logged with topic/partition/offset and skipped; transient
+storage or offset failures stop the consumer for Compose to restart. See the [README](../README.md)
+for commands and the [database sketch](database-schema.dbml) for the current three tables.
+
 ## Stages and ownership
 
 | Stages | Work | Owner |

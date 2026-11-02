@@ -3,12 +3,18 @@
 import json
 import os
 import unittest
+from unittest.mock import Mock, patch
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from backend import db
 from backend.intake.producer import build_raw_event, send_prompts
+from backend.intake.producer import send_raw_event
+from backend.intake.events import validate_raw_event
+from backend.intake.consumer import process_message
 from backend.intake.topics import ALL_TOPICS, PROMPTS_RAW
+from confluent_kafka import KafkaException
+import psycopg
 
 EVENT_FIELDS = {"schema_version", "prompt_id", "text", "source", "created_at", "dataset_prompt_id"}
 
@@ -45,6 +51,96 @@ class RawEventTests(unittest.TestCase):
             with self.subTest(kwargs=repr(kwargs)[:40]):
                 with self.assertRaises(ValueError):
                     build_raw_event(**kwargs)
+
+    def test_invalid_stream_metadata_is_rejected(self):
+        event = build_raw_event("Hello")
+        for field, value in (
+            ("prompt_id", "invalid"), ("created_at", "2026-10-28T12:00:00"),
+            ("schema_version", 1), ("schema_version", True), ("dataset_prompt_id", ""),
+            ("source", "bad\x00source"), ("text", "bad\x00text"),
+        ):
+            with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                validate_raw_event({**event, field: value})
+
+
+class DeliveryTests(unittest.TestCase):
+    def test_waits_for_delivery_callback(self):
+        producer = Mock()
+        event = build_raw_event("Hello")
+
+        def poll(timeout):
+            producer.produce.call_args.kwargs["on_delivery"](None, Mock())
+
+        producer.poll.side_effect = poll
+        send_raw_event(producer, event)
+        producer.flush.assert_not_called()
+        self.assertEqual(producer.produce.call_args.kwargs["key"], b"web")
+
+    def test_missing_acknowledgement_times_out(self):
+        with self.assertRaises(KafkaException):
+            send_raw_event(Mock(), build_raw_event("Hello"), timeout=0)
+
+    def test_delivery_error_is_not_accepted(self):
+        from confluent_kafka import KafkaError
+        producer = Mock()
+        producer.poll.side_effect = lambda timeout: producer.produce.call_args.kwargs["on_delivery"](
+            KafkaError(KafkaError._MSG_TIMED_OUT), Mock()
+        )
+        with self.assertRaises(KafkaException):
+            send_raw_event(producer, build_raw_event("Hello"))
+
+
+class ConsumerTests(unittest.TestCase):
+    def setUp(self):
+        self.event = build_raw_event("Hello")
+        self.message = Mock()
+        self.message.value.return_value = json.dumps(self.event).encode()
+        self.message.topic.return_value = PROMPTS_RAW
+        self.message.partition.return_value = 0
+        self.message.offset.return_value = 12
+        self.consumer = Mock()
+
+    def test_database_finishes_before_offset_commit(self):
+        order = []
+        def save(url, event):
+            order.append("saved")
+            return {"id": event["prompt_id"]}
+        self.consumer.commit.side_effect = lambda **kwargs: order.append("committed")
+        with patch("backend.intake.consumer.db.save_raw_event", side_effect=save):
+            process_message(self.consumer, self.message, "unused")
+        self.assertEqual(order, ["saved", "committed"])
+        self.consumer.commit.assert_called_once_with(message=self.message, asynchronous=False)
+
+    def test_database_outage_does_not_commit(self):
+        with patch("backend.intake.consumer.db.save_raw_event", side_effect=psycopg.OperationalError("down")):
+            with self.assertRaises(psycopg.OperationalError):
+                process_message(self.consumer, self.message, "unused")
+        self.consumer.commit.assert_not_called()
+
+    def test_commit_failure_propagates_after_storage(self):
+        self.consumer.commit.side_effect = KafkaException("commit failed")
+        with patch("backend.intake.consumer.db.save_raw_event", return_value={"id": self.event["prompt_id"]}) as save:
+            with self.assertRaises(KafkaException):
+                process_message(self.consumer, self.message, "unused")
+        save.assert_called_once()
+
+    def test_malformed_records_are_logged_and_skipped(self):
+        for payload in (b"not json", b"\xff", None, json.dumps({**self.event, "schema_version": 1}).encode()):
+            with self.subTest(payload=payload):
+                self.message.value.return_value = payload
+                with patch("backend.intake.consumer.db.save_raw_event") as save:
+                    with self.assertLogs("backend.intake.consumer", level="WARNING") as logs:
+                        process_message(self.consumer, self.message, "unused")
+                save.assert_not_called()
+                self.assertIn("prompts_raw:0:12", logs.output[0])
+        self.assertEqual(self.consumer.commit.call_count, 4)
+
+    def test_constraint_errors_are_skipped_without_logging_prompt_content(self):
+        with patch("backend.intake.consumer.db.save_raw_event", side_effect=psycopg.errors.ForeignKeyViolation("private text")):
+            with self.assertLogs("backend.intake.consumer", level="WARNING") as logs:
+                process_message(self.consumer, self.message, "unused")
+        self.assertNotIn("private text", logs.output[0])
+        self.consumer.commit.assert_called_once()
 
 
 @unittest.skipUnless(os.getenv("TEST_DATABASE_URL"), "Set TEST_DATABASE_URL for PostgreSQL checks")
@@ -88,6 +184,26 @@ class RawEventStorageTests(unittest.TestCase):
             with db.connect(self.url) as conn:
                 conn.execute("DELETE FROM prompts WHERE id = %s", (event["prompt_id"],))
                 conn.execute("DELETE FROM dataset_prompts WHERE id = %s", (dataset_id,))
+
+    def test_redelivery_preserves_timestamp_and_completed_decision(self):
+        event = build_raw_event("Keep this prompt")
+        try:
+            saved = db.save_raw_event(self.url, event)
+            db.save_guard_result(self.url, saved["id"], "block", malicious_score=0.95, model_version="test-v1")
+            later = {**event, "created_at": "2026-10-29T12:00:00+00:00"}
+            duplicate = db.save_raw_event(self.url, later)
+            self.assertEqual(duplicate["created_at"], saved["created_at"])
+            self.assertEqual(duplicate["decision"], "block")
+            self.assertEqual(db.get_guard_result(self.url, saved["id"])["model_version"], "test-v1")
+            with self.assertRaises(ValueError):
+                db.save_raw_event(self.url, {**event, "text": "Different text"})
+            with db.connect(self.url) as conn:
+                count = conn.execute("SELECT count(*) AS n FROM guard_results WHERE prompt_id = %s", (saved["id"],)).fetchone()
+            self.assertEqual(count["n"], 1)
+            self.assertEqual(db.get_prompt(self.url, saved["id"])["text"], event["text"])
+        finally:
+            with db.connect(self.url) as conn:
+                conn.execute("DELETE FROM prompts WHERE id = %s", (event["prompt_id"],))
 
 
 @unittest.skipUnless(os.getenv("TEST_KAFKA_BOOTSTRAP_SERVERS"), "Set TEST_KAFKA_BOOTSTRAP_SERVERS for Kafka checks")

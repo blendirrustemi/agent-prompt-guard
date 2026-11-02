@@ -56,15 +56,37 @@ def save_prompt(database_url, text, dataset_prompt_id=None, source="web", prompt
 
 
 def save_raw_event(database_url, event):
-    """Store a `prompts_raw` Kafka event; every event field maps onto an existing prompts column."""
-    return save_prompt(
-        database_url,
-        event["text"],
-        dataset_prompt_id=event["dataset_prompt_id"],
-        source=event["source"],
-        prompt_id=event["prompt_id"],
-        created_at=event["created_at"],
-    )
+    """Store a raw event once; redelivery never resets a guard decision."""
+    with connect(database_url) as conn:
+        conn.execute(
+            """INSERT INTO prompts (id, text, source, created_at, dataset_prompt_id)
+               VALUES (%s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING""",
+            (event["prompt_id"], event["text"], event["source"], event["created_at"], event["dataset_prompt_id"]),
+        )
+        row = conn.execute("SELECT * FROM prompts WHERE id = %s", (event["prompt_id"],)).fetchone()
+        dataset_id = str(row["dataset_prompt_id"]) if row["dataset_prompt_id"] else None
+        if (row["text"], row["source"], dataset_id) != (
+            event["text"], event["source"], event["dataset_prompt_id"]
+        ):
+            raise ValueError("Prompt ID already exists with different content or source metadata.")
+        # Retries can have a new timestamp; preserve the first stored timestamp.
+        conn.execute(
+            "INSERT INTO guard_results (prompt_id) VALUES (%s) ON CONFLICT (prompt_id) DO NOTHING",
+            (event["prompt_id"],),
+        )
+        result = conn.execute("SELECT decision FROM guard_results WHERE prompt_id = %s", (event["prompt_id"],)).fetchone()
+        row["decision"] = result["decision"]
+    return serialize_prompt(row)
+
+
+def get_prompt(database_url, prompt_id):
+    with connect(database_url) as conn:
+        row = conn.execute(
+            """SELECT p.id, p.text, p.created_at, p.dataset_prompt_id, g.decision
+               FROM prompts p JOIN guard_results g ON g.prompt_id = p.id WHERE p.id = %s""",
+            (prompt_id,),
+        ).fetchone()
+    return serialize_prompt(row) if row else None
 
 
 def list_prompts(database_url):
