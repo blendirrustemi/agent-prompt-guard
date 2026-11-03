@@ -138,7 +138,8 @@ class LiveAgentTests(unittest.TestCase):
         answer = ask(agent, "What is 12 times 7?")
         self.assertIn("84", answer.response)
         self.assertIn("calculator", [call["name"] for call in answer.tool_calls])
-        answer = ask(agent, "When is the final submission deadline?")
+        # The fixture lists both early and late deadlines; ask for the one asserted below.
+        answer = ask(agent, "When is the early final submission deadline?")
         self.assertIn("26 November", answer.response)
         self.assertIn("lookup_course_info", [call["name"] for call in answer.tool_calls])
 

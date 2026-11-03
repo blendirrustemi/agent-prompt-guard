@@ -7,45 +7,26 @@ Send stdin lines:     python -m backend.intake.producer --source source_02 < pro
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
-from uuid import UUID, uuid4
+from time import monotonic
+from uuid import UUID
 
 from confluent_kafka import KafkaException, Producer
 from dotenv import load_dotenv
 
+from .events import MAX_PROMPT_LENGTH, SCHEMA_VERSION, build_raw_event, validate_raw_event
 from .topics import PROMPTS_ALLOWED, PROMPTS_RAW, bootstrap_servers
 
-# Version 2 renamed the fields to match the prompts table (see backend/schema.sql).
-SCHEMA_VERSION = 2
 ALLOWED_SCHEMA_VERSION = 1
-MAX_PROMPT_LENGTH = 8_000
 
 
-def build_raw_event(text, source="web", dataset_prompt_id=None, prompt_id=None, created_at=None):
-    """Return the documented `prompts_raw` event; ids and timestamps are metadata, never parsed from text.
-
-    Fields map one-to-one onto the prompts table: prompt_id -> id, text, source, created_at, dataset_prompt_id.
-    """
-    if not isinstance(text, str) or not text.strip():
-        raise ValueError("Prompt text must be non-empty.")
-    if len(text) > MAX_PROMPT_LENGTH:
-        raise ValueError(f"Prompt text must be at most {MAX_PROMPT_LENGTH} characters.")
-    if not isinstance(source, str) or not source.strip():
-        raise ValueError("Source must be non-empty.")
-    return {
-        "schema_version": SCHEMA_VERSION,
-        "prompt_id": str(prompt_id or uuid4()),
-        "text": text,
-        "source": source,
-        "created_at": (created_at or datetime.now(timezone.utc)).isoformat(),
-        # Must be a dataset_prompts.id; raises ValueError if it is not a UUID.
-        "dataset_prompt_id": str(UUID(str(dataset_prompt_id))) if dataset_prompt_id else None,
-    }
-
-
-def create_producer(servers=None):
+def create_producer(servers=None, timeout=5):
     # Idempotence avoids duplicate messages when the client retries a send.
-    return Producer({"bootstrap.servers": servers or bootstrap_servers(), "enable.idempotence": True})
+    return Producer({
+        "bootstrap.servers": servers or bootstrap_servers(),
+        "enable.idempotence": True,
+        "acks": "all",
+        "delivery.timeout.ms": int(timeout * 1000),
+    })
 
 
 def build_allowed_event(prompt_id, text, model_version):
@@ -70,8 +51,23 @@ def publish_event(producer, topic, key, event, on_delivery=None):
 
 
 def publish_raw_prompt(producer, event, on_delivery=None, topic=PROMPTS_RAW):
-    """Queue one event; keyed by source so each source's prompts stay in order."""
+    """Queue a validated raw event; preserve the ordering of each source."""
+    event = validate_raw_event(event)
     publish_event(producer, topic, event["source"], event, on_delivery)
+
+
+def send_raw_event(producer, event, timeout=5):
+    """Wait for this event's delivery callback, without flushing other requests."""
+    delivered = []
+    deadline = monotonic() + timeout
+    publish_raw_prompt(producer, event, lambda error, message: delivered.append(error))
+    while not delivered:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise KafkaException("Could not confirm prompt delivery before the timeout.")
+        producer.poll(min(remaining, 0.1))
+    if delivered[0] is not None:
+        raise KafkaException(delivered[0])
 
 
 def flush_or_raise(producer, errors, servers=None, timeout=10):
@@ -84,7 +80,7 @@ def flush_or_raise(producer, errors, servers=None, timeout=10):
 
 def send_prompts(texts, source="web", dataset_prompt_id=None, servers=None, timeout=10):
     """Publish each text and wait until Kafka confirms delivery; returns the sent events."""
-    producer = create_producer(servers)
+    producer = create_producer(servers, timeout=timeout)
     events, errors = [], []
 
     def on_delivery(error, message):
@@ -101,7 +97,7 @@ def send_prompts(texts, source="web", dataset_prompt_id=None, servers=None, time
 
 def publish_allowed_prompt(prompt_id, text, model_version, servers=None, timeout=10):
     """Publish one allowed prompt to `prompts_allowed`, keyed by prompt_id; returns the event."""
-    producer = create_producer(servers)
+    producer = create_producer(servers, timeout=timeout)
     errors = []
     event = build_allowed_event(prompt_id, text, model_version)
     publish_event(

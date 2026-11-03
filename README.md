@@ -1,105 +1,181 @@
 # PIJD: Prompt Guard
 
-New to the project? Read the short [folder guide for the team](docs/folder-guide.md) for the current structure and where upcoming features belong.
+Current milestone: **browser → Flask → Kafka → intake consumer → PostgreSQL**.
+The browser shows **Queued** after Kafka accepts a prompt, then **Pending check**
+after the consumer saves it. Classification is future work. A separate agent worker
+and temporary guard stub are available for the allowed-prompt demo (see [Agent](#agent)).
 
-First implementation milestone: a local Flask page with a chat-style prompt box and PostgreSQL storage. Enter a prompt, press Enter or the send button, and see its pending check status. Shift + Enter adds a new line. Refresh starts an empty chat; submitted prompts remain stored in PostgreSQL for later guard processing.
+See the [folder guide](docs/folder-guide.md), [current architecture](docs/architecture-work-plan-v2.md),
+and [database sketch](docs/database-schema.dbml).
 
-A local Kafka broker and a command-line producer are available (see [Kafka](#kafka)), but the page still writes directly to PostgreSQL. All page assets are local. Prompts from the page are stored without classification. A LangChain agent running a local Ollama model answers only prompts whose stored guard decision is `allow` (see [Agent](#agent)); until the real guard exists, a temporary guard stub marks prompts for it. No external API is called. This is one shared local workspace without user accounts or separate conversations.
+## Start the complete local stack
 
-## Quick start with installed PostgreSQL binaries
-
-After installing the Python requirements below, this command starts an isolated local PostgreSQL instance on port 55432, creates the project tables, and writes the connection to `.env` if that file does not already exist:
+With Docker running, from the project root:
 
 ```sh
-python3 backend/scripts/local_db.py
-python3 -m flask --app backend.app run --host 127.0.0.1 --port 5050
+docker compose -f backend/compose.yaml up --build -d --wait
 ```
 
-Open <http://127.0.0.1:5050>. The database files live in the ignored `tmp/postgres-dev` directory. Re-running the script preserves data. It also creates a separate `pijd_test` database for integration checks. To stop this project's instance while keeping its data, run `python3 backend/scripts/local_db.py --stop`. Its loopback-only connection uses trust authentication for this local exercise.
+Open <http://127.0.0.1:5050>. This starts Flask, one intake consumer, Kafka 3.9.1
+in KRaft mode, and PostgreSQL 16. A one-shot initialization service creates the
+tables and three topics before Flask and the consumer start. Re-running startup
+preserves existing records and messages.
 
-## Run with an existing local PostgreSQL server
+Ports 5050, 55432, and 9094 must be free. If this project's standalone PostgreSQL
+instance occupies 55432, stop it first without deleting its data:
 
-Use Python 3.10+ and PostgreSQL. From the project directory:
+```sh
+.venv/bin/python backend/scripts/local_db.py --stop
+```
+
+The Compose database uses its own named volume; it does not import
+`tmp/postgres-dev/`. Preserve that directory if you have saved local prompts.
+Full Compose supplies `db:5432` and `kafka:9092` internally, independently of
+host-side settings in `.env`. The image excludes local environment files.
+
+Stop the stack while preserving data:
+
+```sh
+docker compose -f backend/compose.yaml stop
+```
+
+Do not use `down -v` when you want to keep database records and Kafka messages.
+
+## Submitting and checking prompts
+
+`POST /api/prompts` accepts JSON `{"text": "your prompt"}`, with an optional UUID
+`prompt_id`. The browser generates that UUID and reuses it when retrying the
+same submission. Input must be nonblank text of at most 8,000 characters, without
+null characters. Original whitespace, Unicode and markup are stored literally.
+
+A successful response is **HTTP 202**, after Kafka acknowledges delivery:
+
+```json
+{
+  "status": "queued",
+  "prompt": {
+    "id": "UUID",
+    "text": "your prompt",
+    "created_at": "UTC timestamp",
+    "decision": "pending",
+    "dataset_prompt_id": null
+  }
+}
+```
+
+Acceptance means the record reached Kafka; PostgreSQL storage happens asynchronously.
+An unconfirmed delivery returns 503 within approximately five seconds. The
+browser preserves the input and retry ID, including when the acknowledgement is uncertain.
+
+- `GET /api/prompts/<uuid>`: stored prompt with `status: "stored"`; 404 while absent.
+- `GET /api/prompts`: latest 50 stored prompts in chronological order.
+- Database read outages return 503. The browser continues showing Queued and retries
+  its storage check every two seconds until confirmation.
+
+Refresh clears the visible chat without deleting records. Browser submissions do not yet
+run a classifier or invoke the agent automatically. The UI stops polling once storage is
+confirmed. There are no accounts or separate conversation histories.
+
+## Kafka events and the consumer
+
+| Topic | Current use |
+|---|---|
+| `prompts_raw` | Raw inputs consumed by the intake worker |
+| `prompts_allowed` | Allowed-prompt publisher and optional agent worker; supplied by the temporary guard stub |
+| `prompts_labels` | Reserved for reviewed/evaluation labels |
+
+Each topic starts with one partition and replication factor one. Automatic topic
+creation is off. Topic initialization leaves existing topics unchanged.
+
+The existing **version-two** event matches the prompt table:
+
+```json
+{
+  "schema_version": 2,
+  "prompt_id": "UUID",
+  "text": "original prompt text",
+  "source": "127.0.0.1",
+  "created_at": "2026-11-02T10:00:00+00:00",
+  "dataset_prompt_id": null
+}
+```
+
+Messages are keyed by `source`. This field is the source/IP identifier called
+`source_ip` in the work plan: Flask uses the request IP, and the CLI accepts
+simulated sources. Docker may expose a gateway IP for browser requests.
+Labels stay in the dataset table and are not included in these events.
+
+The consumer uses group `pijd-intake-v1`. It saves the prompt and initial pending
+guard result in one PostgreSQL transaction, then commits that record's Kafka offset.
+Delivery is at least once, with database deduplication by `prompt_id`:
+matching duplicates preserve the original timestamp and any completed guard decision.
+Changed text/source/dataset metadata under an existing ID is logged and skipped.
+
+Malformed records and database constraint violations are logged with their
+topic/partition/offset, then skipped. They remain in the raw topic until Kafka retention
+expires (the broker default is seven days). Transient storage or offset-commit
+failures stop the consumer without advancing further; Compose restarts it.
+This worker is the entry point for later guard stages.
+
+Inspect startup, processing, and consumer lag:
+
+```sh
+docker compose -f backend/compose.yaml ps -a
+docker compose -f backend/compose.yaml logs --tail 50 init consumer web
+docker compose -f backend/compose.yaml exec kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server kafka:9092 --describe --group pijd-intake-v1
+```
+
+To demonstrate queue recovery, stop the consumer, submit a prompt, then start it:
+
+```sh
+docker compose -f backend/compose.yaml stop consumer
+docker compose -f backend/compose.yaml start consumer
+```
+
+## Local Python and command-line publishing
+
+For development outside the app containers:
 
 ```sh
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r backend/requirements.txt
-```
-
-Create the project database once, then create its tables and start Flask:
-
-```sh
-createdb -h localhost pijd
-python -m flask --app backend.app init-db
-python -m flask --app backend.app run --host 127.0.0.1 --port 5050
-```
-
-Open <http://127.0.0.1:5050>. Port 5050 avoids the macOS service commonly using port 5000. If `pijd` already exists, skip the `createdb` command. Re-running `init-db` preserves existing tables and data.
-
-The default connection is `postgresql://localhost:5432/pijd`, using your operating-system database role. To use different credentials or a different port, copy `.env.example` to `.env` and edit `DATABASE_URL` before running Flask. `.env` is excluded from Git.
-
-## Optional Docker PostgreSQL
-
-This option uses the same port as the quick-start instance. Stop that instance with `python3 backend/scripts/local_db.py --stop` before switching to Docker.
-
-With Docker running:
-
-```sh
-docker compose -f backend/compose.yaml up -d --wait db
-```
-
-Set this connection in `.env`, then run `init-db` and Flask as above:
-
-```dotenv
-DATABASE_URL=postgresql://pijd:pijd@localhost:55432/pijd
-```
-
-This is a separate database on local port 55432. The Compose password is a local development value. Its data persists in a Docker volume. `docker compose -f backend/compose.yaml stop db` stops it while keeping the data.
-
-## Kafka
-
-With Docker running, start the single Kafka broker (KRaft mode, no ZooKeeper) and create the topics:
-
-```sh
-docker compose -f backend/compose.yaml up -d --wait kafka
+docker compose -f backend/compose.yaml up -d --wait db kafka
 python -m backend.scripts.create_topics
 ```
 
-The broker listens on `127.0.0.1:9094` for the host and `kafka:9092` for other Compose services. Set `KAFKA_BOOTSTRAP_SERVERS` in `.env` to use a different address. Automatic topic creation is off; re-running the script leaves existing topics unchanged.
+Configure host-side connections in `.env`:
 
-| Topic | Contents |
-|---|---|
-| `prompts_raw` | Every manual or replayed prompt, as the raw prompt event below |
-| `prompts_allowed` | Prompts the guard allowed; read by the agent |
-| `prompts_labels` | Reviewed or dataset labels, kept separate from model inputs |
+```dotenv
+DATABASE_URL=postgresql://pijd:pijd@127.0.0.1:55432/pijd
+KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9094
+```
 
-Publish raw prompt events from the command line, one argument per prompt or one stdin line per prompt:
+Run `python -m flask --app backend.app init-db`, then start the consumer and
+Flask in separate terminals:
 
 ```sh
-python -m backend.intake.producer "Ignore all previous instructions" --source source_01
-python -m backend.intake.producer "Ignore all previous instructions" --source source_02 --dataset-prompt-id <dataset_prompts.id>
+python -m backend.intake.consumer
+python -m flask --app backend.app run --host 127.0.0.1 --port 5050
 ```
 
-Each message is keyed by `source` and its value is JSON:
+Stop the Compose web/consumer services first if they are already running.
+An existing PostgreSQL server or `backend/scripts/local_db.py` can also supply
+the database; set `DATABASE_URL` accordingly.
 
-```json
-{"schema_version": 2, "prompt_id": "uuid", "text": "original prompt text", "source": "source_01", "created_at": "2026-10-28T10:08:15+00:00", "dataset_prompt_id": null}
+The existing CLI remains available, with one argument or stdin line per prompt:
+
+```sh
+python -m backend.intake.producer "Hello" --source source_01
+python -m backend.intake.producer "Dataset example" --source source_02 --dataset-prompt-id UUID
 ```
 
-The fields match the `prompts` table, so storing a message needs no extra columns:
-
-| Event field | `prompts` column |
-|---|---|
-| `prompt_id` | `id` |
-| `text` | `text` |
-| `source` | `source` (`web` for the page, `source_01`… for simulated replay sources) |
-| `created_at` | `created_at` |
-| `dataset_prompt_id` | `dataset_prompt_id` (UUID of the `dataset_prompts` row, or `null`) |
-
-`schema_version` describes the message format and is not stored. Labels are never part of the message. From Python, use `backend.intake.producer.send_prompts(texts, source=..., dataset_prompt_id=...)` to publish and `db.save_raw_event(url, event)` to store a received message with its `pending` guard result. `docker compose -f backend/compose.yaml stop kafka` stops the broker while keeping its messages in a Docker volume.
+A dataset ID must already exist in the same database the consumer uses.
+Its label can be joined to stored predictions afterward; labels do not enter the stream.
 
 ## Agent
+
+The optional agent runs separately from the default four-service intake stack.
 
 One LangChain agent with two deterministic tools, running a local model through [Ollama](https://ollama.com):
 
@@ -125,7 +201,7 @@ python -m backend.agent.agent "What is 12 * 7?"
 
 ### Agent worker
 
-The worker reads `prompts_allowed` from Kafka. For each message it re-checks the decision stored in `guard_results`, runs the agent only if it is `allow`, and stores the outcome in `agent_runs`. It runs the text stored in `prompts`, so the agent answers exactly what the guard checked. Kafka offsets are committed after the row is stored, and a prompt that already has a run is skipped, so redelivered messages are never answered twice.
+The worker reads `prompts_allowed` from Kafka. For each message it re-checks the decision stored in `guard_results`, runs the agent only if it is `allow`, and stores the outcome in `agent_runs`. It runs the text stored in `prompts`, so the agent answers exactly what the guard checked. Kafka offsets are committed after the row is stored, and a prompt that already has a stored run is skipped on redelivery.
 
 ```sh
 python -m flask --app backend.app init-db
@@ -162,122 +238,62 @@ Publish one from Python with `backend.intake.producer.publish_allowed_prompt(pro
 | `error` | Why a run failed or was rejected |
 | `created_at` | When the run was stored |
 
-## The tables
+## Database and batch data
 
 | Table | Contents |
 |---|---|
-| `prompts` | UUID, original prompt text, source (`web`), creation time, and `dataset_prompt_id` linking a replayed prompt to its `dataset_prompts` row |
-| `guard_results` | One record per prompt; decision initially `pending`; optional score, attack type, reason, model version, and check time |
-| `dataset_prompts` | Imported rows from all three datasets (NeurAlchemy, deepset, jackhhao) for training and evaluation |
-| `agent_runs` | One record per prompt the agent worker handled: status, response, tool calls, latency and model (see [Agent](#agent)) |
+| `prompts` | UUID, original text, source, creation time, optional dataset link |
+| `guard_results` | One result per prompt, initially pending, with optional classifier output |
+| `dataset_prompts` | NeurAlchemy, deepset and jackhhao training/evaluation rows |
+| `agent_runs` | Agent status, response, tools, latency, model, and errors for a handled prompt |
 
-See [docs/database-schema.dbml](docs/database-schema.dbml) for the full diagram.
+The schema and foreign keys are shown in [database-schema.dbml](docs/database-schema.dbml)
+and [database.png](docs/database.png). Re-running `init-db` preserves data and
+adds the existing dataset-link column to older databases.
 
-The `prompts` and `guard_results` inserts commit in one transaction. The guard result references its prompt through a foreign key. Later, a guard worker can read pending rows, run a classifier, and update the decision to `allow`, `block`, or `review`. Model fields remain null until an actual check is implemented.
+For the full batch/notebook environment, use Python 3.13+ and uv:
 
-Input must be non-empty text of at most 8,000 characters. SQL parameters store submitted text literally, and the browser renders it as text. Failed submissions preserve the input and display an error. The initial UI does not poll for future decision changes. Refresh clears the visible messages and input without deleting database records; saved history remains available through `GET /api/prompts`.
-
-### `dataset_prompts`
-
-`dataset_prompts` holds every row of the three datasets, so models are trained and evaluated from one place:
-
-| Column | Type | Meaning |
-|---|---|---|
-| `id` | `UUID` | Importers should pass a stable UUID (for example `uuid5` of dataset, split and row number) so re-running an import with `ON CONFLICT (id) DO NOTHING` skips rows already stored; otherwise the database generates a random one |
-| `text` | `TEXT` | Original prompt text; must not be blank. No length limit, because some dataset prompts are long |
-| `label` | `SMALLINT` | `1` malicious (injection or jailbreak), `0` benign. Importers convert each dataset's labels to this, for example jackhhao's `jailbreak`/`benign` |
-| `source_dataset` | `TEXT` | `neuralchemy`, `deepset` or `jackhhao` (lowercase) |
-| `source` | `TEXT` | Upstream source inside the dataset, such as NeurAlchemy's `neuralchemy_v1`; optional |
-| `split` | `TEXT` | Partition the row belongs to, such as `train`, `validation` or `test`; required |
-| `category` | `TEXT` | The dataset's own category, such as NeurAlchemy's `control` or `chain_of_thought`; optional |
-| `attack_group` | `TEXT` | Attack type or family, for the attack-type classifier (B3); optional |
-| `group_id` | `TEXT` | Template group; rows that share a template stay in the same split; optional |
-| `include_in_baseline` | `BOOLEAN` | `true` for rows used to train the B1/B2 baseline models (cleaned NeurAlchemy `core` data, excluding `control` and `chain_of_thought`); defaults to `false`, so deepset and jackhhao stay held out |
-| `metadata` | `JSONB` | Any other fields from the original dataset row; defaults to `{}` |
-
-An index on `(source_dataset, split)` keeps per-dataset, per-split queries fast.
-
-### Following a dataset prompt into `prompts`
-
-When a dataset row is replayed through the guard, its `prompts` row stores the dataset row's `id` in `prompts.dataset_prompt_id`. Prompts typed in the web UI leave it `NULL`. One dataset row can be replayed many times; each replay is its own `prompts` row pointing to the same dataset row. The database rejects IDs that do not exist, and deleting a dataset row sets the link to `NULL` instead of deleting the live prompt.
-
-In code, pass the ID when storing a replayed prompt: `db.save_prompt(url, text, dataset_prompt_id=row_id)`, where `row_id` is the `dataset_prompts.id` UUID. The replayed event itself carries no label; join afterwards to compare guard decisions with the true labels:
-
-```sql
-SELECT p.id, g.decision, g.malicious_score, d.label, d.source_dataset, d.split
-FROM prompts p
-JOIN guard_results g ON g.prompt_id = p.id
-JOIN dataset_prompts d ON d.id = p.dataset_prompt_id;
+```sh
+uv sync --project backend/batch --locked
+uv run --project backend/batch --locked python backend/batch/import_neuralchemy.py
+uv run --project backend/batch --locked python backend/batch/import_external_datasets.py
 ```
 
-`init-db` adds the column to existing databases too, so re-run it after pulling this change.
-
-## Files and endpoints
-
-Run commands from the project root. Flask loads the UI from `frontend/` and reads `.env` from the root.
-
-```text
-frontend/
-  templates/index.html       # page markup
-  static/                    # CSS, JavaScript, favicon
-backend/
-  __init__.py                # Python package
-  app.py                     # Flask routes and init-db command
-  db.py                      # PostgreSQL operations
-  schema.sql                 # database schema
-  requirements.txt           # Python dependencies
-  compose.yaml               # optional Docker database and Kafka broker
-  agent/agent.py             # LangChain agent on Ollama
-  agent/tools.py             # calculator and course-info tools
-  agent/course_info.json     # facts for the course-info tool
-  agent/worker.py            # runs the agent on prompts_allowed
-  agent/guard_stub.py        # TEMPORARY: marks prompts allowed until the real guard exists
-  intake/producer.py         # publish raw and allowed prompt events to Kafka
-  intake/topics.py           # shared topic names and Kafka address
-  scripts/local_db.py         # local database setup/start/stop
-  scripts/create_topics.py    # create the Kafka topics
-  tests/test_app.py           # route and database checks
-  tests/test_intake.py        # raw event and Kafka checks
-  tests/test_agent.py         # tool, worker, Kafka and live-model checks
-docs/                        # architecture and team work plan
-tmp/                         # local database files and preview artifacts
-README.md
-.env.example                 # example database configuration
-```
-
-`__pycache__/` folders and `.pyc` files are generated Python caches and can be deleted. Preview images and rendered PDF pages in `tmp/` are optional. Keep `tmp/postgres-dev/`: it holds the saved local database. The course PDF and `docs/` are reference material, useful for the class but not needed to run Flask. `compose.yaml` is only needed if you choose the Docker database option.
-
-Endpoints:
-
-- `GET /api/prompts`: latest 50 prompts, in chronological order, each with its `dataset_prompt_id` (`null` for web prompts).
-- `POST /api/prompts`: JSON `{ "text": "your prompt" }`; returns the saved prompt.
-- `docs/architecture-work-plan.md`: broader project proposal. This Flask page implements prompt intake; dashboards, classifiers and the streaming guard are later milestones.
+Import commands download their datasets and use the root `.env`. NeurAlchemy baseline
+rows are flagged using `neuralchemy_v1`, excluding `control` and `chain_of_thought`.
+External deepset/jackhhao rows remain held out of baseline training. Import IDs use
+the original source split and row index, so filtering and deduplication do not renumber them.
 
 ## Checks
 
-Basic route checks:
+Fast checks need only the runtime dependencies:
 
 ```sh
 python -m unittest discover -s backend/tests -v
+node --test frontend/tests/app.test.cjs
 ```
 
-To also verify persistence against an isolated test database:
+Database and Kafka checks are opt-in. Create a dedicated test database once, then run:
 
 ```sh
-createdb -h localhost pijd_test
-TEST_DATABASE_URL=postgresql://localhost:5432/pijd_test python -m unittest discover -s backend/tests -v
+docker compose -f backend/compose.yaml exec db createdb -U pijd pijd_test
+TEST_DATABASE_URL=postgresql://pijd:pijd@127.0.0.1:55432/pijd_test TEST_KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9094 python -m unittest discover -s backend/tests -v
 ```
 
-For the quick-start instance, use `TEST_DATABASE_URL=postgresql://pijd@127.0.0.1:55432/pijd_test` instead; the database already exists.
-
-The database checks create the schema in the configured test database and remove only the rows they created. Use a dedicated test database.
-
-To also check real Kafka round trips (creates the topics if missing and publishes test messages to `prompts_raw` and `prompts_allowed`), set `TEST_KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9094`. To run the agent against Ollama, set `TEST_OLLAMA_MODEL` to the model name, for example `qwen3:1.7b`.
-
-On Windows, Smart App Control can block the Kafka client library (`DLL load failed while importing cimpl: An Application Control policy has blocked this file`). The Kafka tests then fail or skip. They can run in a Linux container on the Compose network instead, where `kafka:9092` and `db:5432` are the addresses and the host's Ollama is `http://host.docker.internal:11434`:
+Database checks remove their fixture rows. Kafka round-trip checks publish fixture
+records to `prompts_raw` and `prompts_allowed`. Batch checks use local examples without downloads:
 
 ```sh
-docker run --rm --network pijd_default -v "$PWD:/app" -w /app \
-  -e TEST_DATABASE_URL=postgresql://pijd:pijd@db:5432/pijd_test -e TEST_KAFKA_BOOTSTRAP_SERVERS=kafka:9092 \
-  python:3.12-slim sh -c "pip install -q -r backend/requirements.txt && python -m unittest backend.tests.test_intake backend.tests.test_agent -v"
+TEST_DATABASE_URL=postgresql://pijd:pijd@127.0.0.1:55432/pijd_test uv run --project backend/batch --locked python -m unittest discover -s backend/tests -p test_batch_import.py -v
+```
+
+The combined runtime suite also checks the agent's two tools, its stored-decision gate,
+and the `prompts_allowed` Kafka round trip using a fake model. Only the live-model test
+requires Ollama: set `TEST_OLLAMA_MODEL` to a locally available tool-capable model.
+
+If a host's Windows Application Control blocks the Kafka client DLL, run the runtime
+suite inside the existing Linux container instead:
+
+```sh
+docker compose -f backend/compose.yaml exec -e TEST_DATABASE_URL=postgresql://pijd:pijd@db:5432/pijd_test -e TEST_KAFKA_BOOTSTRAP_SERVERS=kafka:9092 web python -m unittest discover -s backend/tests -v
 ```
