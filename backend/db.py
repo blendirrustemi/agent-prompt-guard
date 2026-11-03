@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 
 def connect(database_url):
@@ -99,3 +100,44 @@ def get_guard_result(database_url, prompt_id):
     with connect(database_url) as conn:
         row = conn.execute("SELECT * FROM guard_results WHERE prompt_id = %s", (prompt_id,)).fetchone()
     return serialize_guard_result(row) if row else None
+
+
+def get_prompt_text(database_url, prompt_id):
+    """Return the stored text of a prompt, or None if it does not exist."""
+    with connect(database_url) as conn:
+        row = conn.execute("SELECT text FROM prompts WHERE id = %s", (prompt_id,)).fetchone()
+    return row["text"] if row else None
+
+
+def serialize_agent_run(row):
+    return {
+        "prompt_id": str(row["prompt_id"]),
+        "status": row["status"],
+        "response": row["response"],
+        "tool_calls": row["tool_calls"],
+        "latency_ms": row["latency_ms"],
+        "model": row["model"],
+        "error": row["error"],
+        "created_at": row["created_at"].isoformat(),
+    }
+
+
+def save_agent_run(
+    database_url, prompt_id, status, response=None, tool_calls=(), latency_ms=None, model=None, error=None
+):
+    """Record one agent run; returns None if this prompt already has one (e.g. Kafka redelivery)."""
+    with connect(database_url) as conn:
+        row = conn.execute(
+            """INSERT INTO agent_runs (prompt_id, status, response, tool_calls, latency_ms, model, error)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (prompt_id) DO NOTHING
+               RETURNING *""",
+            (prompt_id, status, response, Jsonb(list(tool_calls)), latency_ms, model, error),
+        ).fetchone()
+    return serialize_agent_run(row) if row else None
+
+
+def get_agent_run(database_url, prompt_id):
+    with connect(database_url) as conn:
+        row = conn.execute("SELECT * FROM agent_runs WHERE prompt_id = %s", (prompt_id,)).fetchone()
+    return serialize_agent_run(row) if row else None

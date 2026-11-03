@@ -31,6 +31,18 @@ CREATE TABLE IF NOT EXISTS dataset_prompts (
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
+-- One row per prompt the agent worker handled; 'rejected' means the stored decision was not 'allow'.
+CREATE TABLE IF NOT EXISTS agent_runs (
+    prompt_id UUID PRIMARY KEY REFERENCES prompts(id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK (status IN ('completed', 'failed', 'rejected')),
+    response TEXT,
+    tool_calls JSONB NOT NULL DEFAULT '[]'::jsonb,
+    latency_ms INTEGER,
+    model TEXT,
+    error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- Added after dataset_prompts exists; IF NOT EXISTS also upgrades databases created before this column.
 -- NULL for prompts typed in the web UI; replays point to the dataset row they came from.
 ALTER TABLE prompts ADD COLUMN IF NOT EXISTS dataset_prompt_id UUID

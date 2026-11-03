@@ -66,6 +66,6 @@ def create_app(test_config=None):
     def init_db_command():
         """Create the project tables in the configured database."""
         db.init_db(app.config["DATABASE_URL"])
-        click.echo("Created prompts, guard_results and dataset_prompts tables.")
+        click.echo("Created prompts, guard_results, dataset_prompts and agent_runs tables.")
 
     return app

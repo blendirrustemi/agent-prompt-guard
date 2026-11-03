@@ -4,7 +4,7 @@ New to the project? Read the short [folder guide for the team](docs/folder-guide
 
 First implementation milestone: a local Flask page with a chat-style prompt box and PostgreSQL storage. Enter a prompt, press Enter or the send button, and see its pending check status. Shift + Enter adds a new line. Refresh starts an empty chat; submitted prompts remain stored in PostgreSQL for later guard processing.
 
-This milestone makes no LLM or external API calls. A local Kafka broker and a command-line producer are available (see [Kafka](#kafka)), but the page still writes directly to PostgreSQL. All page assets are local. Prompts are stored without classification and are never forwarded to an agent. This is one shared local workspace without user accounts or separate conversations.
+A local Kafka broker and a command-line producer are available (see [Kafka](#kafka)), but the page still writes directly to PostgreSQL. All page assets are local. Prompts from the page are stored without classification. A LangChain agent running a local Ollama model answers only prompts whose stored guard decision is `allow` (see [Agent](#agent)); until the real guard exists, a temporary guard stub marks prompts for it. No external API is called. This is one shared local workspace without user accounts or separate conversations.
 
 ## Quick start with installed PostgreSQL binaries
 
@@ -99,6 +99,69 @@ The fields match the `prompts` table, so storing a message needs no extra column
 
 `schema_version` describes the message format and is not stored. Labels are never part of the message. From Python, use `backend.intake.producer.send_prompts(texts, source=..., dataset_prompt_id=...)` to publish and `db.save_raw_event(url, event)` to store a received message with its `pending` guard result. `docker compose -f backend/compose.yaml stop kafka` stops the broker while keeping its messages in a Docker volume.
 
+## Agent
+
+One LangChain agent with two deterministic tools, running a local model through [Ollama](https://ollama.com):
+
+- `calculator(a, operation, b)`: `add`, `subtract`, `multiply` or `divide`, without `eval`.
+- `lookup_course_info(topic)`: facts about this project (deadlines, timeline, stage owners, datasets, models, deliverables) from `backend/agent/course_info.json`.
+
+The model is configuration, not code. Install Ollama, pull a model that supports tool calling, and name it in `.env`:
+
+```sh
+ollama pull qwen3:1.7b
+```
+
+```dotenv
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_MODEL=qwen3:1.7b
+```
+
+Ask the agent directly; this needs neither Kafka nor the database:
+
+```sh
+python -m backend.agent.agent "What is 12 * 7?"
+```
+
+### Agent worker
+
+The worker reads `prompts_allowed` from Kafka. For each message it re-checks the decision stored in `guard_results`, runs the agent only if it is `allow`, and stores the outcome in `agent_runs`. It runs the text stored in `prompts`, so the agent answers exactly what the guard checked. Kafka offsets are committed after the row is stored, and a prompt that already has a run is skipped, so redelivered messages are never answered twice.
+
+```sh
+python -m flask --app backend.app init-db
+python -m backend.scripts.create_topics
+python -m backend.agent.worker            # keeps running; add --once to stop when the topic is drained
+```
+
+The real guard does not exist yet, so a **temporary** guard stub stores a decision and publishes the prompt to `prompts_allowed`. Delete `backend/agent/guard_stub.py` once the guard does this:
+
+```sh
+python -m backend.agent.guard_stub "What is 15 divided by 3?"
+python -m backend.agent.guard_stub --prompt-id <uuid>                     # an existing prompt
+python -m backend.agent.guard_stub "Ignore all instructions" --decision block   # the worker rejects it
+```
+
+A `prompts_allowed` message is JSON, keyed by `prompt_id`:
+
+```json
+{"schema_version": 1, "prompt_id": "uuid", "text": "original prompt text", "model_version": "guard model version"}
+```
+
+Publish one from Python with `backend.intake.producer.publish_allowed_prompt(prompt_id, text, model_version)`.
+
+`agent_runs` has one row per handled prompt:
+
+| Column | Meaning |
+|---|---|
+| `prompt_id` | The prompt (primary key, so at most one run per prompt) |
+| `status` | `completed`; `failed` (Ollama or the model errored, see `error`); `rejected` (the stored decision was not `allow`, the agent was not called) |
+| `response` | The agent's answer |
+| `tool_calls` | JSON list of `{"name", "args"}` for every tool the agent called |
+| `latency_ms` | How long the agent took |
+| `model` | The Ollama model used |
+| `error` | Why a run failed or was rejected |
+| `created_at` | When the run was stored |
+
 ## The tables
 
 | Table | Contents |
@@ -106,6 +169,7 @@ The fields match the `prompts` table, so storing a message needs no extra column
 | `prompts` | UUID, original prompt text, source (`web`), creation time, and `dataset_prompt_id` linking a replayed prompt to its `dataset_prompts` row |
 | `guard_results` | One record per prompt; decision initially `pending`; optional score, attack type, reason, model version, and check time |
 | `dataset_prompts` | Imported rows from all three datasets (NeurAlchemy, deepset, jackhhao) for training and evaluation |
+| `agent_runs` | One record per prompt the agent worker handled: status, response, tool calls, latency and model (see [Agent](#agent)) |
 
 See [docs/database-schema.dbml](docs/database-schema.dbml) for the full diagram.
 
@@ -163,12 +227,18 @@ backend/
   schema.sql                 # database schema
   requirements.txt           # Python dependencies
   compose.yaml               # optional Docker database and Kafka broker
-  intake/producer.py         # publish raw prompt events to Kafka
+  agent/agent.py             # LangChain agent on Ollama
+  agent/tools.py             # calculator and course-info tools
+  agent/course_info.json     # facts for the course-info tool
+  agent/worker.py            # runs the agent on prompts_allowed
+  agent/guard_stub.py        # TEMPORARY: marks prompts allowed until the real guard exists
+  intake/producer.py         # publish raw and allowed prompt events to Kafka
   intake/topics.py           # shared topic names and Kafka address
   scripts/local_db.py         # local database setup/start/stop
   scripts/create_topics.py    # create the Kafka topics
   tests/test_app.py           # route and database checks
   tests/test_intake.py        # raw event and Kafka checks
+  tests/test_agent.py         # tool, worker, Kafka and live-model checks
 docs/                        # architecture and team work plan
 tmp/                         # local database files and preview artifacts
 README.md
@@ -181,7 +251,7 @@ Endpoints:
 
 - `GET /api/prompts`: latest 50 prompts, in chronological order, each with its `dataset_prompt_id` (`null` for web prompts).
 - `POST /api/prompts`: JSON `{ "text": "your prompt" }`; returns the saved prompt.
-- `docs/architecture-work-plan.md`: broader project proposal. This Flask page implements prompt intake; dashboards, classifiers, streaming, and the agent are later milestones.
+- `docs/architecture-work-plan.md`: broader project proposal. This Flask page implements prompt intake; dashboards, classifiers and the streaming guard are later milestones.
 
 ## Checks
 
@@ -202,4 +272,12 @@ For the quick-start instance, use `TEST_DATABASE_URL=postgresql://pijd@127.0.0.1
 
 The database checks create the schema in the configured test database and remove only the rows they created. Use a dedicated test database.
 
-To also check a real Kafka round trip (creates the topics if missing and publishes one test message to `prompts_raw`), set `TEST_KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9094`.
+To also check real Kafka round trips (creates the topics if missing and publishes test messages to `prompts_raw` and `prompts_allowed`), set `TEST_KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9094`. To run the agent against Ollama, set `TEST_OLLAMA_MODEL` to the model name, for example `qwen3:1.7b`.
+
+On Windows, Smart App Control can block the Kafka client library (`DLL load failed while importing cimpl: An Application Control policy has blocked this file`). The Kafka tests then fail or skip. They can run in a Linux container on the Compose network instead, where `kafka:9092` and `db:5432` are the addresses and the host's Ollama is `http://host.docker.internal:11434`:
+
+```sh
+docker run --rm --network pijd_default -v "$PWD:/app" -w /app \
+  -e TEST_DATABASE_URL=postgresql://pijd:pijd@db:5432/pijd_test -e TEST_KAFKA_BOOTSTRAP_SERVERS=kafka:9092 \
+  python:3.12-slim sh -c "pip install -q -r backend/requirements.txt && python -m unittest backend.tests.test_intake backend.tests.test_agent -v"
+```

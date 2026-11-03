@@ -19,7 +19,8 @@ def process_deepset():
     ds = load_dataset("deepset/prompt-injections", split="train")
     df = pd.DataFrame(ds)
 
-    df['source_dataset'] = 'deepset/prompt-injections'
+    # Must match the dataset_prompts.source_dataset check in schema.sql
+    df['source_dataset'] = 'deepset'
     df['source'] = 'huggingface'
     df['split'] = 'external_test'
     df['category'] = None
@@ -37,7 +38,7 @@ def process_jackhhao():
     df = pd.DataFrame(ds)
 
     df['label'] = df['type'].map({'benign': 0, 'jailbreak': 1})
-    df['source_dataset'] = 'jackhhao/jailbreak-classification'
+    df['source_dataset'] = 'jackhhao'
     df['source'] = 'huggingface'
     df['split'] = 'external_test'
     df['category'] = None
