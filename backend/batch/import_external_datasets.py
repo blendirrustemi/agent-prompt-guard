@@ -20,6 +20,7 @@ def process_deepset():
     df = pd.DataFrame(ds)
 
     df['source_row_index'] = range(len(df))
+    # Must match the dataset_prompts.source_dataset check in schema.sql
     df['source_dataset'] = 'deepset'
     df['source'] = 'huggingface'
     df['split'] = 'external_test'

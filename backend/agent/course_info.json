@@ -1,0 +1,34 @@
+{
+  "project": {
+    "keywords": ["goal", "pijd", "guard", "overview", "about", "t6"],
+    "info": "T6: LLM Agent Prompt-Injection & Jailbreak Guard (PIJD). A guard sits in front of one LangChain agent with two tools. Benign and adversarial prompts are replayed through Kafka, manual prompts take the same path, every prompt is classified and its decision stored, and only allowed prompts reach the agent. Supervisor: Oumaima Araar."
+  },
+  "deadlines": {
+    "keywords": ["deadline", "due", "submission", "submit", "defense", "defence", "exam", "date", "dates", "when"],
+    "info": "Architecture and work-plan deliverable: 19 October 2026. Original code freeze target: 23 November 2026. Early final submission: 26 November 2026, 12:00 CET, through Canvas. Defenses: 30 November - 4 December 2026. Late submission deadline: 6 December 2026, 12:00 CET."
+  },
+  "timeline": {
+    "keywords": ["schedule", "plan", "milestone", "milestones", "phases"],
+    "info": "Oct 13-25: Docker Compose, Kafka, PostgreSQL, datasets and shared event/database contracts. Oct 26 - Nov 10: develop the owned stages and batch models in parallel. Nov 11-19: integrate the guard, agent, storage, five dashboards and the review/retraining loop. Nov 20-25: finish experiments, report, slides and a clean-start deployment."
+  },
+  "stages": {
+    "keywords": ["team", "members", "owner", "owners", "who", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9", "p10", "streaming"],
+    "info": "P1-P2 stream ingestion/text cleaning and IP join/threat cache: Blendi. P3-P4 stateful similarity probing and best-model inference with attack-type classification: Emma. P5-P6 unsupervised anomaly detection (Half-Space Trees) and drift monitoring: Francesca. P7-P8 score routing/splitting and Top-10 window aggregations: shared. P9-P10 burst detection window and rate limiting/throttling: Nandor."
+  },
+  "datasets": {
+    "keywords": ["data", "dataset", "neuralchemy", "deepset", "jackhhao", "training data"],
+    "info": "Training: the cleaned NeurAlchemy core data, keeping source neuralchemy_v1 and excluding the control and chain_of_thought categories. External held-out test sets: deepset/prompt-injections and jackhhao/jailbreak-classification; they stay out of training and model selection."
+  },
+  "models": {
+    "keywords": ["model", "classifier", "b1", "b2", "b3", "b4", "batch", "retraining", "tf-idf"],
+    "info": "B1: TF-IDF + logistic regression. B2: frozen transformer embeddings + logistic regression. The binary model for P4 is chosen by validation macro-F1. B3: classifies malicious prompts by attack type. B4: retrains from reviewed labels on a schedule or after drift alerts, evaluating candidates before updating P4."
+  },
+  "deliverables": {
+    "keywords": ["report", "slides", "documentation", "deliverable", "requirements", "references"],
+    "info": "Code and data repositories, a shared English report (structured abstract, introduction, datasets, architecture, testing/experiments, 10-15 references) and at most ten slides. Each member contributes their own section and a dashboard page with at least two graphs."
+  },
+  "agent": {
+    "keywords": ["tools", "langchain", "ollama", "llm", "calculator"],
+    "info": "One LangChain agent running a local model through Ollama (chosen with the OLLAMA_MODEL setting), with two tools: calculator(a, operation, b) and lookup_course_info(topic). It only answers prompts the guard stored as allowed."
+  }
+}

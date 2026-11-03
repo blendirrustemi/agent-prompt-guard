@@ -8,9 +8,10 @@
 | `frontend/static/` | CSS, browser JavaScript, and icons. |
 | `backend/` | Flask routes (`app.py`), database helpers (`db.py`), tables (`schema.sql`), dependencies, and Docker configuration. |
 | `backend/scripts/` | Database/topic setup and Compose initialization. |
-| `backend/intake/` | Version-two events, Kafka producer, topic names, and the intake consumer. |
+| `backend/intake/` | Version-two raw events, raw/allowed publishers, topic names, and the intake consumer. |
+| `backend/agent/` | LangChain/Ollama agent, two tools, allowed-prompt worker, and temporary guard stub. |
 | `backend/batch/` | Dataset imports and exploratory notebooks, with separate dependencies. |
-| `backend/tests/` | Route and database checks. |
+| `backend/tests/` | Route, storage, Kafka, agent, and local dataset fixture checks. |
 | `docs/` | Architecture, work plan, team guides, and the database diagram (`database-schema.dbml`, open in dbdiagram.io). |
 
 Today: **prompt box → Flask → Kafka (`prompts_raw`) → consumer → PostgreSQL**.
@@ -19,17 +20,20 @@ the consumer saves the prompt. The consumer does not classify prompts yet. Refre
 an empty chat while saved prompts remain in PostgreSQL. Run commands from the project root;
 see [README](../README.md). Keep `.env` local and preserve `tmp/postgres-dev/` and Docker volumes.
 
+Separately, **`prompts_allowed` → agent worker → `agent_runs`** answers prompts with a
+stored `allow` decision. The temporary guard stub supplies these decisions until the
+real guard exists; the default Compose intake stack does not start the agent.
+
 ## Next steps
 
 Create these folders when their implementation starts:
 
 | Planned folder | Responsibility |
 |---|---|
-| `backend/stream/` | Guard stages: features, classification, decisions, repetition, metrics, and drift. |
-| `backend/agent/` | LangChain agent and tools; execute only prompts with a stored `allow` decision. |
+| `backend/stream/` | Guard stages, metrics and drift; replace the temporary stub by storing decisions and publishing allowed prompts. |
 | `backend/dashboard/` | Streamlit graphs and human review pages. |
 
-Extend the existing consumer with guard stages, then add the agent and dashboards. Keep the
+Extend the existing consumer with guard stages, connect the allowed-prompt publisher, and add dashboards. Keep the
 version-two event contract and shared topic names consistent. Runtime packages belong in
 `backend/requirements.txt`; batch/notebook packages belong in `backend/batch/pyproject.toml`.
 Update the README when run commands change.
