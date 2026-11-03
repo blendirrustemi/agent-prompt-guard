@@ -3,7 +3,7 @@
 
 Project agent_prompt_guard {
   database_type: 'PostgreSQL'
-  Note: 'Prompts submitted through the web UI, the guard classifier verdict for each one, and the imported datasets.'
+  Note: 'Prompts submitted through the web UI, the guard classifier verdict for each one, the agent runs, and the imported datasets.'
 }
 
 Table prompts {
@@ -27,6 +27,18 @@ Table guard_results {
   reason text
   model_version text
   checked_at timestamptz [note: 'Set when the classifier saves its result']
+}
+
+// One row per prompt the agent worker handled.
+Table agent_runs {
+  prompt_id uuid [pk, ref: - prompts.id, note: 'ON DELETE CASCADE; at most one run per prompt']
+  status text [not null, note: "One of 'completed', 'failed', 'rejected' (stored decision was not 'allow')"]
+  response text [note: "The agent's answer"]
+  tool_calls jsonb [not null, default: `'[]'::jsonb`, note: 'List of {name, args}']
+  latency_ms integer
+  model text [note: 'Ollama model used']
+  error text [note: 'Why the run failed or was rejected']
+  created_at timestamptz [not null, default: `now()`]
 }
 
 // Imported training and evaluation data; replayed rows are linked from prompts.dataset_prompt_id.

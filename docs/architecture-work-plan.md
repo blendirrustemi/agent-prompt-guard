@@ -201,7 +201,7 @@ The UI generates IDs and timestamps; they are metadata, not extracted from user 
 
 `prompt_id`, `classical_score`, `embedding_score`, both predictions and versions, `active_model`, `active_model_version`, `decision`, `decision_reason`, `predicted_attack_type`, `pattern_id`, feature fields, and latency fields.
 
-`prompts.allowed` contains `prompt_id`, original text, and active-model version. The agent checks that the persisted decision is ALLOW before running. `prompts.labels` contains `prompt_id`, binary label, optional reviewed type, label source, and timestamp. Labels are written by the review UI or replay evaluator, never parsed from prompt text.
+`prompts.allowed` contains `prompt_id`, original text, and active-model version. The agent checks that the persisted decision is ALLOW before running. Implemented as the Kafka topic `prompts_allowed` with `{"schema_version": 1, "prompt_id", "text", "model_version"}` (`backend/intake/producer.py`) and the agent worker in `backend/agent/worker.py`. `prompts.labels` contains `prompt_id`, binary label, optional reviewed type, label source, and timestamp. Labels are written by the review UI or replay evaluator, never parsed from prompt text.
 
 ### PostgreSQL tables
 
@@ -210,7 +210,7 @@ The UI generates IDs and timestamps; they are metadata, not extracted from user 
 - `review_labels`: human/evaluator labels, label origin, and eligibility for retraining.
 - `alerts`: source bursts, style shifts, and labeled error-drift alerts.
 - `metric_snapshots`: rolling counts, Top-10 snapshots, queue history, latencies.
-- `agent_runs`: response, tools called, latency, status, correlated prompt ID.
+- `agent_runs`: response, tools called, latency, status, correlated prompt ID. Implemented in `backend/schema.sql`: `prompt_id` (primary key), `status` (`completed`/`failed`/`rejected`), `response`, `tool_calls` (JSON), `latency_ms`, `model`, `error`, `created_at`.
 - `model_runs`: version, training snapshot ID, validation/test metrics, activation status.
 
 Use `prompt_id` to correlate every record and idempotent writes to avoid duplicate database rows on Kafka redelivery. For reproducible coursework experiments, reset rolling state and start a fresh replay run. Record alert thresholds and model versions with each experiment.
