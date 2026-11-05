@@ -10,4 +10,5 @@ dependencies = [
     "python-dotenv>=1.0,<2.0",
     "matplotlib>=3.9,<4",
     "scikit-learn>=1.5,<2",
+    "sentence-transformers>=5,<6",
 ]
