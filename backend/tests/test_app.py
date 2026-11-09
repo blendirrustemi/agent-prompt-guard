@@ -2,10 +2,11 @@
 
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import psycopg
+from confluent_kafka import KafkaException
 
 from backend import db
 from backend.app import create_app
@@ -13,7 +14,9 @@ from backend.app import create_app
 
 class IntakeRouteTests(unittest.TestCase):
     def setUp(self):
-        self.client = create_app({"TESTING": True}).test_client()
+        self.app = create_app({"TESTING": True})
+        self.app.extensions["kafka_producer"] = Mock()
+        self.client = self.app.test_client()
 
     def test_page_and_input_validation_work_without_database_access(self):
         self.assertEqual(self.client.get("/").status_code, 200)
@@ -22,11 +25,40 @@ class IntakeRouteTests(unittest.TestCase):
                 self.assertEqual(self.client.post("/api/prompts", json=body).status_code, 400)
         self.assertEqual(self.client.post("/api/prompts", data="plain text").status_code, 415)
 
-    def test_unavailable_database_returns_actionable_error(self):
-        with patch("backend.db.save_prompt", side_effect=psycopg.OperationalError("unavailable")):
-            response = self.client.post("/api/prompts", json={"text": "Keep this prompt"})
-        self.assertEqual(response.status_code, 503)
-        self.assertIn("not confirmed saved", response.json["error"])
+    def test_submission_publishes_before_acknowledgement_without_writing_database(self):
+        prompt_id = str(uuid4())
+        with patch("backend.app.send_raw_event") as publish, patch("backend.db.save_prompt") as save:
+            response = self.client.post("/api/prompts", json={"text": "  Hello 🛡️\n", "prompt_id": prompt_id})
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json["status"], "queued")
+        self.assertEqual(response.json["prompt"]["id"], prompt_id)
+        event = publish.call_args.args[1]
+        self.assertEqual(event["source"], "127.0.0.1")
+        self.assertEqual(event["text"], "  Hello 🛡️\n")
+        self.assertIsNone(event["dataset_prompt_id"])
+        save.assert_not_called()
+
+    def test_unavailable_kafka_returns_actionable_error(self):
+        for error in (KafkaException("unavailable"), BufferError("queue full")):
+            with patch("backend.app.send_raw_event", side_effect=error):
+                response = self.client.post("/api/prompts", json={"text": "Keep this prompt"})
+            self.assertEqual(response.status_code, 503)
+            self.assertIn("not confirm", response.json["error"])
+
+    def test_bad_metadata_or_null_characters_do_not_publish(self):
+        with patch("backend.app.send_raw_event") as publish:
+            for body in ({"text": "Hi", "prompt_id": "bad"}, {"text": "Hi\x00"}):
+                self.assertEqual(self.client.post("/api/prompts", json=body).status_code, 400)
+        publish.assert_not_called()
+
+    def test_individual_status_handles_missing_stored_and_unavailable_database(self):
+        url = f"/api/prompts/{uuid4()}"
+        with patch("backend.db.get_prompt", return_value=None):
+            self.assertEqual(self.client.get(url).status_code, 404)
+        with patch("backend.db.get_prompt", return_value={"decision": "pending"}):
+            self.assertEqual(self.client.get(url).json["status"], "stored")
+        with patch("backend.db.get_prompt", side_effect=psycopg.OperationalError("unavailable")):
+            self.assertEqual(self.client.get(url).status_code, 503)
 
 
 @unittest.skipUnless(os.getenv("TEST_DATABASE_URL"), "Set TEST_DATABASE_URL for PostgreSQL checks")
@@ -35,6 +67,7 @@ class PostgreSQLIntakeTests(unittest.TestCase):
         self.url = os.environ["TEST_DATABASE_URL"]
         db.init_db(self.url)
         self.client = create_app({"TESTING": True, "DATABASE_URL": self.url}).test_client()
+        self.client.application.extensions["kafka_producer"] = Mock()
         self.ids = []
 
     def tearDown(self):
@@ -44,14 +77,19 @@ class PostgreSQLIntakeTests(unittest.TestCase):
 
     def test_submission_preserves_literal_text_and_pending_result_after_reload(self):
         text = "  <script>alert('test')</script>\n'; DROP TABLE prompts; -- 🛡️  "
-        response = self.client.post("/api/prompts", json={"text": text})
-        self.assertEqual(response.status_code, 201)
+        def consume(producer, event):
+            db.save_raw_event(self.url, event)
+
+        with patch("backend.app.send_raw_event", side_effect=consume):
+            response = self.client.post("/api/prompts", json={"text": text})
+        self.assertEqual(response.status_code, 202)
         prompt = response.json["prompt"]
         self.ids.append(prompt["id"])
         self.assertEqual(prompt["text"], text)
         self.assertEqual(prompt["decision"], "pending")
         loaded = {item["id"]: item for item in self.client.get("/api/prompts").json["prompts"]}
         self.assertEqual(loaded[prompt["id"]]["text"], text)
+        self.assertEqual(self.client.get(f"/api/prompts/{prompt['id']}").json["status"], "stored")
         with db.connect(self.url) as conn:
             result = conn.execute("SELECT * FROM guard_results WHERE prompt_id = %s", (prompt["id"],)).fetchone()
         self.assertEqual(result["decision"], "pending")

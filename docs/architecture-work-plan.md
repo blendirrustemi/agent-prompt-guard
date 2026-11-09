@@ -1,5 +1,9 @@
 # T6: LLM Agent Prompt-Injection & Jailbreak Guard (PIJD)
 
+> Historical first proposal. The current stage design and ownership are in
+> [architecture-work-plan-v2.md](architecture-work-plan-v2.md). See the [README](../README.md)
+> for the implemented Kafka intake, version-two event contract, and startup instructions.
+
 ## First deliverable: proposed architecture and individual work plan
 
 Team: Blendi, x, y, z, g. Supervisor: Oumaima Araar.
@@ -61,7 +65,7 @@ Both binary models score each prompt in the small demonstration. One active mode
 
 Start with two configurable score thresholds, for example:
 
-- `score <= 0.30`: ALLOW; store the decision and publish to `prompts.allowed`.
+- `score <= 0.30`: ALLOW; store the decision and publish to `prompts_allowed`.
 - `score >= 0.70`: BLOCK; log the decision and show it in the dashboard.
 - Between the thresholds: REVIEW; store a pending review item and hold the prompt.
 
@@ -201,7 +205,7 @@ The UI generates IDs and timestamps; they are metadata, not extracted from user 
 
 `prompt_id`, `classical_score`, `embedding_score`, both predictions and versions, `active_model`, `active_model_version`, `decision`, `decision_reason`, `predicted_attack_type`, `pattern_id`, feature fields, and latency fields.
 
-`prompts.allowed` contains `prompt_id`, original text, and active-model version. The agent checks that the persisted decision is ALLOW before running. `prompts.labels` contains `prompt_id`, binary label, optional reviewed type, label source, and timestamp. Labels are written by the review UI or replay evaluator, never parsed from prompt text.
+`prompts_allowed` carries a schema-version-one event with `prompt_id`, original `text`, and `model_version`. Its publisher is in `backend/intake/producer.py`; `backend/agent/worker.py` re-checks that the persisted decision is `allow` before running the agent. A temporary guard stub supplies decisions for demonstration until the real guard is integrated. `prompts_labels` is reserved for binary/reviewed labels, their source, and timestamp. Labels come from the review UI or replay evaluator, never from prompt text; this label pipeline is future work.
 
 ### PostgreSQL tables
 
@@ -210,7 +214,7 @@ The UI generates IDs and timestamps; they are metadata, not extracted from user 
 - `review_labels`: human/evaluator labels, label origin, and eligibility for retraining.
 - `alerts`: source bursts, style shifts, and labeled error-drift alerts.
 - `metric_snapshots`: rolling counts, Top-10 snapshots, queue history, latencies.
-- `agent_runs`: response, tools called, latency, status, correlated prompt ID.
+- `agent_runs`: response, tools called, latency, status, correlated prompt ID. Implemented in `backend/schema.sql`: `prompt_id` (primary key), `status` (`completed`/`failed`/`rejected`), `response`, `tool_calls` (JSON), `latency_ms`, `model`, `error`, `created_at`.
 - `model_runs`: version, training snapshot ID, validation/test metrics, activation status.
 
 Use `prompt_id` to correlate every record and idempotent writes to avoid duplicate database rows on Kafka redelivery. For reproducible coursework experiments, reset rolling state and start a fresh replay run. Record alert thresholds and model versions with each experiment.

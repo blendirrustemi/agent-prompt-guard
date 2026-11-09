@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 
 def connect(database_url):
@@ -56,15 +57,37 @@ def save_prompt(database_url, text, dataset_prompt_id=None, source="web", prompt
 
 
 def save_raw_event(database_url, event):
-    """Store a `prompts_raw` Kafka event; every event field maps onto an existing prompts column."""
-    return save_prompt(
-        database_url,
-        event["text"],
-        dataset_prompt_id=event["dataset_prompt_id"],
-        source=event["source"],
-        prompt_id=event["prompt_id"],
-        created_at=event["created_at"],
-    )
+    """Store a raw event once; redelivery never resets a guard decision."""
+    with connect(database_url) as conn:
+        conn.execute(
+            """INSERT INTO prompts (id, text, source, created_at, dataset_prompt_id)
+               VALUES (%s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING""",
+            (event["prompt_id"], event["text"], event["source"], event["created_at"], event["dataset_prompt_id"]),
+        )
+        row = conn.execute("SELECT * FROM prompts WHERE id = %s", (event["prompt_id"],)).fetchone()
+        dataset_id = str(row["dataset_prompt_id"]) if row["dataset_prompt_id"] else None
+        if (row["text"], row["source"], dataset_id) != (
+            event["text"], event["source"], event["dataset_prompt_id"]
+        ):
+            raise ValueError("Prompt ID already exists with different content or source metadata.")
+        # Retries can have a new timestamp; preserve the first stored timestamp.
+        conn.execute(
+            "INSERT INTO guard_results (prompt_id) VALUES (%s) ON CONFLICT (prompt_id) DO NOTHING",
+            (event["prompt_id"],),
+        )
+        result = conn.execute("SELECT decision FROM guard_results WHERE prompt_id = %s", (event["prompt_id"],)).fetchone()
+        row["decision"] = result["decision"]
+    return serialize_prompt(row)
+
+
+def get_prompt(database_url, prompt_id):
+    with connect(database_url) as conn:
+        row = conn.execute(
+            """SELECT p.id, p.text, p.created_at, p.dataset_prompt_id, g.decision
+               FROM prompts p JOIN guard_results g ON g.prompt_id = p.id WHERE p.id = %s""",
+            (prompt_id,),
+        ).fetchone()
+    return serialize_prompt(row) if row else None
 
 
 def list_prompts(database_url):
@@ -99,3 +122,44 @@ def get_guard_result(database_url, prompt_id):
     with connect(database_url) as conn:
         row = conn.execute("SELECT * FROM guard_results WHERE prompt_id = %s", (prompt_id,)).fetchone()
     return serialize_guard_result(row) if row else None
+
+
+def get_prompt_text(database_url, prompt_id):
+    """Return the stored text of a prompt, or None if it does not exist."""
+    with connect(database_url) as conn:
+        row = conn.execute("SELECT text FROM prompts WHERE id = %s", (prompt_id,)).fetchone()
+    return row["text"] if row else None
+
+
+def serialize_agent_run(row):
+    return {
+        "prompt_id": str(row["prompt_id"]),
+        "status": row["status"],
+        "response": row["response"],
+        "tool_calls": row["tool_calls"],
+        "latency_ms": row["latency_ms"],
+        "model": row["model"],
+        "error": row["error"],
+        "created_at": row["created_at"].isoformat(),
+    }
+
+
+def save_agent_run(
+    database_url, prompt_id, status, response=None, tool_calls=(), latency_ms=None, model=None, error=None
+):
+    """Record one agent run; returns None if this prompt already has one (e.g. Kafka redelivery)."""
+    with connect(database_url) as conn:
+        row = conn.execute(
+            """INSERT INTO agent_runs (prompt_id, status, response, tool_calls, latency_ms, model, error)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (prompt_id) DO NOTHING
+               RETURNING *""",
+            (prompt_id, status, response, Jsonb(list(tool_calls)), latency_ms, model, error),
+        ).fetchone()
+    return serialize_agent_run(row) if row else None
+
+
+def get_agent_run(database_url, prompt_id):
+    with connect(database_url) as conn:
+        row = conn.execute("SELECT * FROM agent_runs WHERE prompt_id = %s", (prompt_id,)).fetchone()
+    return serialize_agent_run(row) if row else None
