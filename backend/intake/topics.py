@@ -5,7 +5,9 @@ import os
 PROMPTS_RAW = "prompts_raw"
 PROMPTS_ALLOWED = "prompts_allowed"
 PROMPTS_LABELS = "prompts_labels"
-ALL_TOPICS = (PROMPTS_RAW, PROMPTS_ALLOWED, PROMPTS_LABELS)
+# P10 rate-limiter decisions (one per raw prompt), consumed by P7 score routing.
+THROTTLE_DECISIONS = "throttle_decisions"
+ALL_TOPICS = (PROMPTS_RAW, PROMPTS_ALLOWED, PROMPTS_LABELS, THROTTLE_DECISIONS)
 
 
 def bootstrap_servers():

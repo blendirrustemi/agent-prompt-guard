@@ -10,6 +10,7 @@
 | `backend/scripts/` | Database/topic setup and Compose initialization. |
 | `backend/intake/` | Version-two raw events, raw/allowed publishers, topic names, and the intake consumer. |
 | `backend/agent/` | LangChain/Ollama agent, two tools, allowed-prompt worker, and temporary guard stub. |
+| `backend/stream/` | Guard stages. Now: P9 burst window (`burst.py`), P10 rate limiter (`rate_limiter.py`), the `throttle_decisions` event (`throttle_events.py`) and their worker (`burst_worker.py`). |
 | `backend/batch/` | Dataset imports and exploratory notebooks, with separate dependencies. |
 | `backend/tests/` | Route, storage, Kafka, agent, and local dataset fixture checks. |
 | `docs/` | Architecture, work plan, team guides, and the database diagram (`database-schema.dbml`, open in dbdiagram.io). |
@@ -24,13 +25,16 @@ Separately, **`prompts_allowed` → agent worker → `agent_runs`** answers prom
 stored `allow` decision. The temporary guard stub supplies these decisions until the
 real guard exists; the default Compose intake stack does not start the agent.
 
+In parallel, **`prompts_raw` → burst worker (P9/P10) → `throttle_decisions` (topic for P7) + `throttle_decisions` (table)**
+blocks sources that send too many prompts in a sliding window.
+
 ## Next steps
 
 Create these folders when their implementation starts:
 
 | Planned folder | Responsibility |
 |---|---|
-| `backend/stream/` | Guard stages, metrics and drift; replace the temporary stub by storing decisions and publishing allowed prompts. |
+| `backend/stream/` (remaining stages) | Other guard stages, metrics and drift; replace the temporary stub by storing decisions and publishing allowed prompts. |
 | `backend/dashboard/` | Streamlit graphs and human review pages. |
 
 Extend the existing consumer with guard stages, connect the allowed-prompt publisher, and add dashboards. Keep the

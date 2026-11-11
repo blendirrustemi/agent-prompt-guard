@@ -31,7 +31,18 @@ Flask returns HTTP 202 after Kafka acknowledges a prompt. The consumer stores th
 pending result atomically, then commits its Kafka offset. Matching redelivery does not overwrite
 a stored decision. Invalid events are logged with topic/partition/offset and skipped; transient
 storage or offset failures stop the consumer for Compose to restart. See the [README](../README.md)
-for commands and the [database sketch](database-schema.dbml) for the current four tables.
+for commands and the [database sketch](database-schema.dbml) for the current five tables.
+
+### Implemented P9–P10: burst detection and rate limiting
+
+A separate `burst` worker (`backend/stream/`, group `pijd-burst-v1`) also reads `prompts_raw`.
+P9 counts all prompts per source in a sliding event-time window; it needs no classifier score,
+matching its position beside P3/P5. P10 blocks a source for a cooldown once the window reaches a
+threshold (defaults: 10 prompts in 60 s, 300 s block). For every prompt, P10 stores its decision
+in the `throttle_decisions` table (IP block metrics, kept for learning) and publishes it to the
+`throttle_decisions` topic keyed by `prompt_id`. P7 consumes that topic: `block` is an instant
+override before score routing, `allow` leaves routing to the model scores. The event contract is
+in the [README](../README.md#burst-detection-and-rate-limiting-p9p10).
 
 ## Stages and ownership
 

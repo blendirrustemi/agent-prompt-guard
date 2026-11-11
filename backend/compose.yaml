@@ -44,6 +44,22 @@ services:
     restart: unless-stopped
     stop_grace_period: 20s
 
+  # P9 burst detection + P10 rate limiting; publishes to throttle_decisions for P7.
+  burst:
+    <<: *python
+    command: ["python", "-m", "backend.stream.burst_worker"]
+    environment:
+      DATABASE_URL: postgresql://pijd:pijd@db:5432/pijd
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      BURST_WINDOW_SECONDS: ${BURST_WINDOW_SECONDS:-60}
+      BURST_THRESHOLD: ${BURST_THRESHOLD:-10}
+      BURST_COOLDOWN_SECONDS: ${BURST_COOLDOWN_SECONDS:-300}
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    stop_grace_period: 20s
+
   db:
     image: postgres:16
     environment:

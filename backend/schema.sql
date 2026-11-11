@@ -48,6 +48,24 @@ CREATE TABLE IF NOT EXISTS agent_runs (
 ALTER TABLE prompts ADD COLUMN IF NOT EXISTS dataset_prompt_id UUID
     REFERENCES dataset_prompts(id) ON DELETE SET NULL;
 
+-- P10 rate-limiter output: one row per prompt seen by the burst worker (allow or block).
+-- Thresholds are stored on every row so experiments are reproducible and usable for learning.
+CREATE TABLE IF NOT EXISTS throttle_decisions (
+    prompt_id UUID PRIMARY KEY REFERENCES prompts(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    action TEXT NOT NULL CHECK (action IN ('allow', 'block')),
+    reason TEXT,                    -- 'burst_detected' | 'source_blocked' | NULL for allow
+    window_count INTEGER NOT NULL CHECK (window_count >= 0),  -- prompts from this source in the window, incl. this one
+    window_seconds INTEGER NOT NULL CHECK (window_seconds > 0),
+    threshold INTEGER NOT NULL CHECK (threshold > 0),
+    blocked_until TIMESTAMPTZ,      -- set while the source is blocked
+    burst_started BOOLEAN NOT NULL DEFAULT FALSE,  -- TRUE only on the prompt that started the block
+    event_time TIMESTAMPTZ NOT NULL,  -- the raw event's created_at
+    decided_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS prompts_created_at_idx ON prompts (created_at DESC);
+CREATE INDEX IF NOT EXISTS throttle_decisions_source_time_idx ON throttle_decisions (source, event_time DESC);
+CREATE INDEX IF NOT EXISTS throttle_decisions_bursts_idx ON throttle_decisions (event_time DESC) WHERE burst_started;
 CREATE INDEX IF NOT EXISTS prompts_dataset_prompt_id_idx ON prompts (dataset_prompt_id);
 CREATE INDEX IF NOT EXISTS dataset_prompts_source_split_idx ON dataset_prompts (source_dataset, split);
