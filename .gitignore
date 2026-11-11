@@ -6,4 +6,4 @@ __pycache__/
 tmp/
 .pytest_cache/
 .idea/
-backend/batch/models/
+

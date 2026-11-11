@@ -30,20 +30,19 @@ def load_baseline_data(database_url):
         SELECT id, text, label, split, group_id
         FROM dataset_prompts
         WHERE source_dataset = 'neuralchemy'
-          AND include_in_baseline = TRUE
         ORDER BY split, id
     """
     with connect(database_url) as conn:
         rows = conn.execute(query).fetchall()
 
     if not rows:
-        raise ValueError("No baseline rows found. Run import_neuralchemy.py first.")
+        raise ValueError("No NeurAlchemy rows found. Run import_neuralchemy.py first.")
 
     df = pd.DataFrame(rows)
     if set(df["split"]) != {"train", "validation", "test"}:
         raise ValueError("Expected the original train, validation and test splits.")
     if df["text"].isna().any() or df["text"].str.strip().eq("").any():
-        raise ValueError("Baseline data contains missing or blank prompt text.")
+        raise ValueError("NeurAlchemy data contains missing or blank prompt text.")
     for split_name in ("train", "validation", "test"):
         labels = set(df.loc[df["split"] == split_name, "label"])
         if labels != {0, 1}:
@@ -116,7 +115,7 @@ def train_classifier(train_data):
 
 
 def evaluate_classifier(classifier, split_data, split_name):
-    """Measure macro-F1 on a held-out split without updating the classifier."""
+    """Measure macro-F1 on a dataset split without updating the classifier."""
     predictions = classifier.predict(split_data["X"])
     macro_f1 = f1_score(
         split_data["y"], predictions, labels=[0, 1], average="macro", zero_division=0
@@ -125,7 +124,7 @@ def evaluate_classifier(classifier, split_data, split_name):
     return macro_f1
 
 
-def save_model(classifier, encoder, validation_f1, test_f1, output_dir=MODEL_DIR):
+def save_model(classifier, encoder, train_f1, validation_f1, test_f1, output_dir=MODEL_DIR):
     """Save the trained classifier and the settings needed to recreate embeddings."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -141,6 +140,11 @@ def save_model(classifier, encoder, validation_f1, test_f1, output_dir=MODEL_DIR
         "embedding_dimension": encoder.get_sentence_embedding_dimension(),
         "label_mapping": {"0": "benign", "1": "malicious"},
         "classifier_parameters": classifier.get_params(),
+        "training_data": {
+            "source_dataset": "neuralchemy",
+            "include_in_baseline_filter": False,
+        },
+        "train_macro_f1": float(train_f1),
         "validation_macro_f1": float(validation_f1),
         "neuralchemy_test_macro_f1": float(test_f1),
         "package_versions": {
@@ -165,15 +169,16 @@ def main():
     counts = df.groupby(["split", "label"]).size().unstack(fill_value=0)
     counts = counts.reindex(["train", "validation", "test"])
     counts = counts.rename(columns={0: "benign", 1: "malicious"})
-    print(f"Loaded {len(df)} baseline prompts.\n")
+    print(f"Loaded {len(df)} NeurAlchemy prompts.\n")
     print(counts.to_string())
 
     encoder = load_encoder()
     splits = create_embeddings(df, encoder)
     classifier = train_classifier(splits["train"])
+    train_f1 = evaluate_classifier(classifier, splits["train"], "Train")
     validation_f1 = evaluate_classifier(classifier, splits["validation"], "Validation")
     test_f1 = evaluate_classifier(classifier, splits["test"], "NeurAlchemy test")
-    save_model(classifier, encoder, validation_f1, test_f1)
+    save_model(classifier, encoder, train_f1, validation_f1, test_f1)
 
 
 if __name__ == "__main__":

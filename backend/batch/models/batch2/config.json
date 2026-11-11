@@ -1,0 +1,38 @@
+{
+  "encoder_name": "sentence-transformers/all-MiniLM-L6-v2",
+  "max_seq_length": 256,
+  "normalize_embeddings": true,
+  "embedding_dimension": 384,
+  "label_mapping": {
+    "0": "benign",
+    "1": "malicious"
+  },
+  "classifier_parameters": {
+    "C": 1.0,
+    "class_weight": null,
+    "dual": false,
+    "fit_intercept": true,
+    "intercept_scaling": 1,
+    "l1_ratio": 0.0,
+    "max_iter": 1000,
+    "n_jobs": null,
+    "penalty": "deprecated",
+    "random_state": 42,
+    "solver": "lbfgs",
+    "tol": 0.0001,
+    "verbose": 0,
+    "warm_start": false
+  },
+  "training_data": {
+    "source_dataset": "neuralchemy",
+    "include_in_baseline_filter": false
+  },
+  "train_macro_f1": 0.9645301275623819,
+  "validation_macro_f1": 0.9499930683918669,
+  "neuralchemy_test_macro_f1": 0.9442307848575007,
+  "package_versions": {
+    "scikit-learn": "1.9.1",
+    "sentence-transformers": "5.7.0",
+    "numpy": "2.5.4"
+  }
+}
