@@ -23,12 +23,12 @@ Table prompts {
 
 Table guard_results {
   prompt_id uuid [pk, ref: - prompts.id, note: 'ON DELETE CASCADE; created as pending with each prompt']
-  decision text [not null, default: 'pending', note: "One of 'pending', 'allow', 'block', 'review'"]
+  decision text [not null, default: 'pending', note: "P4 stores scores while pending; P7 finalizes as allow, block, or review"]
   malicious_score "double precision" [note: 'Between 0 and 1']
   attack_type text
   reason text
   model_version text
-  checked_at timestamptz [note: 'Set when the classifier saves its result']
+  checked_at timestamptz [note: 'P4 score completion time while pending; P7 final decision time afterward']
 }
 
 // One row per prompt the agent worker handled.
@@ -64,6 +64,32 @@ Table throttle_decisions {
 }
 
 // Imported training and evaluation data; replayed rows are linked from prompts.dataset_prompt_id.
+// P7 allowed-prompt transactional outbox.
+Table allowed_prompt_outbox {
+  prompt_id uuid [pk, ref: - prompts.id, note: 'Pending allowed event; published_at is set after Kafka acknowledgement']
+  created_at timestamptz [not null, default: `now()`]
+  published_at timestamptz
+}
+
+// P8 rolling-window outputs. Current is replaced; history is retained for seven days.
+Table attack_aggregate_current {
+  id smallint [pk, default: 1, note: 'Singleton current P8 snapshot']
+  snapshot_at timestamptz [not null]
+  window_start timestamptz [not null]
+  window_end timestamptz [not null]
+  attack_type_counts jsonb [not null, note: 'Counts for all six predicted P4 types']
+  top_patterns jsonb [not null, note: 'Top ten repeated normalized prompts per type']
+}
+
+Table attack_aggregate_history {
+  snapshot_id bigserial [pk]
+  snapshot_at timestamptz [not null, unique]
+  window_start timestamptz [not null]
+  window_end timestamptz [not null]
+  attack_type_counts jsonb [not null]
+  top_patterns jsonb [not null]
+}
+
 Table dataset_prompts {
   id uuid [pk, default: `gen_random_uuid()`, note: 'Importers pass a stable uuid5 so re-imports skip existing rows']
   text text [not null, note: 'Non-blank; no length limit']

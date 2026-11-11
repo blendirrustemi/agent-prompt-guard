@@ -60,6 +60,37 @@ services:
     restart: unless-stopped
     stop_grace_period: 20s
 
+  # P7 score routing; throttle blocks are applied immediately and allowed routes join P4 scores.
+  router:
+    <<: *python
+    command: ["python", "-m", "backend.stream.router_worker"]
+    environment:
+      DATABASE_URL: postgresql://pijd:pijd@db:5432/pijd
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      P7_ALLOW_MAX_SCORE: ${P7_ALLOW_MAX_SCORE:-0.30}
+      P7_BLOCK_MIN_SCORE: ${P7_BLOCK_MIN_SCORE:-0.70}
+      P7_SCORE_TIMEOUT_SECONDS: ${P7_SCORE_TIMEOUT_SECONDS:-30}
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    stop_grace_period: 20s
+
+  # P8 attack-type and repeated-pattern rolling-window snapshots.
+  aggregation:
+    <<: *python
+    command: ["python", "-m", "backend.stream.aggregation_worker"]
+    environment:
+      DATABASE_URL: postgresql://pijd:pijd@db:5432/pijd
+      P8_WINDOW_SECONDS: ${P8_WINDOW_SECONDS:-60}
+      P8_SNAPSHOT_INTERVAL_SECONDS: ${P8_SNAPSHOT_INTERVAL_SECONDS:-10}
+      P8_HISTORY_RETENTION_SECONDS: ${P8_HISTORY_RETENTION_SECONDS:-604800}
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    stop_grace_period: 20s
+
   db:
     image: postgres:16
     environment:

@@ -1,9 +1,9 @@
 # PIJD: Prompt Guard
 
-Current milestone: **browser → Flask → Kafka → intake consumer (P1/P2) → PostgreSQL**.
+Current path: **browser → Flask → Kafka → intake consumer (P1/P2) → PostgreSQL**, with separate P7/P8 and P9/P10 workers.
 Dataset replay feeds the same Kafka/consumer path.
 The browser shows **Queued** after Kafka accepts a prompt, then **Pending check**
-after the consumer saves its original text and preprocessing snapshot. Classification is future work. A separate agent worker
+after the consumer saves its original text and preprocessing snapshot. P4 live scoring remains future work. A separate agent worker
 and temporary guard stub are available for the allowed-prompt demo (see [Agent](#agent)).
 
 See the [folder guide](docs/folder-guide.md), [current architecture](docs/architecture-work-plan-v2.md),
@@ -17,7 +17,7 @@ With Docker running, from the project root:
 docker compose -f backend/compose.yaml up --build -d --wait
 ```
 
-Open <http://127.0.0.1:5050>. This starts Flask, one intake consumer, the P9/P10
+Open <http://127.0.0.1:5050>. This starts Flask, the intake consumer, P7 router, P8 aggregation worker, P9/P10
 burst worker, Kafka 3.9.1 in KRaft mode, and PostgreSQL 16. A one-shot initialization
 service creates the tables and four topics before Flask and the workers start. Re-running startup
 preserves existing records and messages.
@@ -82,9 +82,9 @@ confirmed. There are no accounts or separate conversation histories.
 | Topic | Current use |
 |---|---|
 | `prompts_raw` | Raw inputs consumed by the intake worker |
-| `prompts_allowed` | Allowed-prompt publisher and optional agent worker; supplied by the temporary guard stub |
+| `prompts_allowed` | Allowed-prompt publisher from P7 (or temporary guard stub) and optional agent worker |
 | `prompts_labels` | Reserved for reviewed/evaluation labels |
-| `throttle_decisions` | P10 rate-limiter decision per raw prompt, for P7 (see [Burst detection](#burst-detection-and-rate-limiting-p9p10)) |
+| `throttle_decisions` | P10 rate-limiter decision per raw prompt, consumed by P7 (see [Decision routing and attack aggregation](#decision-routing-and-attack-aggregation-p7p8)) |
 
 Each topic starts with one partition and replication factor one. Automatic topic
 creation is off. Topic initialization leaves existing topics unchanged.
@@ -180,7 +180,8 @@ The `burst` service (`python -m backend.stream.burst_worker`, group `pijd-burst-
 
 For every prompt the worker stores one row in the `throttle_decisions` table, publishes the same
 decision to the `throttle_decisions` topic (keyed by `prompt_id`), then commits its offset.
-P7 will apply `action: "block"` as an override before score routing once integrated:
+P7 consumes each event: `action: "block"` overrides classifier routing immediately, while
+`allow` proceeds to the stored P4 score policy:
 
 ```json
 {
@@ -203,6 +204,47 @@ P7 will apply `action: "block"` as an override before score routing once integra
 `burst_detected` on the prompt that starts a block (`burst_started: true`, a burst alert) or
 `source_blocked` during the cooldown. Redelivery republishes the stored decision unchanged.
 Active blocks are reloaded from PostgreSQL when the worker restarts.
+
+## Decision routing and attack aggregation (P7/P8)
+
+Compose runs two workers alongside intake and P9/P10:
+
+- **P7 router** consumes `throttle_decisions`. P10 `block` immediately finalizes the prompt as
+  `block`. P10 `allow` joins the stored P4 `malicious_score`; prompts with no score remain pending
+  while later throttle events continue. P7 allows scores at or below 0.30, blocks scores at or
+  above 0.70, and sends the middle band to `review`. A missing score is sent to review after
+  30 seconds from the P10 decision. Only allowed prompts enter `prompts_allowed`.
+- **P8 aggregation** refreshes a 60-second event-time window every 10 seconds. It counts P4's six
+  attack types and records up to ten repeated normalized prompts per type (at least two occurrences).
+  The current snapshot is in `attack_aggregate_current`; timestamped snapshots are in
+  `attack_aggregate_history` and are retained for seven days.
+
+P4 must save score/type output with `db.save_guard_score(...)` while leaving `decision` as
+`pending`; P7 owns the final allow/block/review decision. The P7 allowed-prompt transactional
+outbox retries Kafka publishing after a restart. P8 uses P1's NFC/whitespace-normalized
+`preprocessing.cleaned_text`, falling back to the same normalization of the original text when
+no preprocessing snapshot exists. It uses predicted attack types, not dataset labels.
+
+P7 settings: `P7_ALLOW_MAX_SCORE` (0.30), `P7_BLOCK_MIN_SCORE` (0.70), and
+`P7_SCORE_TIMEOUT_SECONDS` (30). P8 settings: `P8_WINDOW_SECONDS` (60),
+`P8_SNAPSHOT_INTERVAL_SECONDS` (10), and `P8_HISTORY_RETENTION_SECONDS` (604800).
+Scores must satisfy `0 <= allow threshold < block threshold <= 1`; timing values must be positive.
+
+Run the workers directly when the local database and Kafka are available:
+
+```sh
+python -m backend.stream.router_worker
+python -m backend.stream.aggregation_worker
+```
+
+Inspect routing and snapshots:
+
+```sh
+docker compose -f backend/compose.yaml logs --tail 50 router aggregation
+docker compose -f backend/compose.yaml exec db psql -U pijd -d pijd -c "SELECT decision, count(*) FROM guard_results GROUP BY decision"
+docker compose -f backend/compose.yaml exec db psql -U pijd -d pijd -c "SELECT * FROM attack_aggregate_current"
+docker compose -f backend/compose.yaml exec db psql -U pijd -d pijd -c "SELECT snapshot_at, attack_type_counts, top_patterns FROM attack_aggregate_history ORDER BY snapshot_at DESC LIMIT 10"
+```
 
 Trigger a burst and inspect it (in PowerShell, pipe 12 lines the same way):
 

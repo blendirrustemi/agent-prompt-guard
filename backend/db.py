@@ -140,6 +140,91 @@ def save_guard_result(
     return serialize_guard_result(row) if row else None
 
 
+def save_guard_score(
+    database_url, prompt_id, malicious_score, attack_type, model_version, reason=None, checked_at=None
+):
+    """Persist P4 output while leaving the final allow/block/review choice to P7."""
+    with connect(database_url) as conn:
+        row = conn.execute(
+            """UPDATE guard_results
+               SET malicious_score = %s, attack_type = %s,
+                   reason = CASE WHEN decision = 'pending' THEN %s ELSE reason END,
+                   model_version = %s,
+                   checked_at = CASE WHEN decision = 'pending' THEN COALESCE(%s, NOW()) ELSE checked_at END
+               WHERE prompt_id = %s
+               RETURNING *""",
+            (malicious_score, attack_type, reason, model_version, checked_at, prompt_id),
+        ).fetchone()
+    return serialize_guard_result(row) if row else None
+
+
+def route_guard_result(database_url, prompt_id, decision, reason):
+    """Finalize one pending guard result and enqueue allowed prompts atomically."""
+    if decision not in {"allow", "block", "review"}:
+        raise ValueError("A final guard decision must be allow, block, or review.")
+    with connect(database_url) as conn:
+        row = conn.execute(
+            """UPDATE guard_results
+               SET decision = %s, reason = %s, checked_at = NOW()
+               WHERE prompt_id = %s AND decision = 'pending'
+               RETURNING prompt_id""",
+            (decision, reason, prompt_id),
+        ).fetchone()
+        if row and decision == "allow":
+            conn.execute(
+                """INSERT INTO allowed_prompt_outbox (prompt_id)
+                   VALUES (%s) ON CONFLICT (prompt_id) DO NOTHING""",
+                (prompt_id,),
+            )
+    return bool(row)
+
+
+def get_pending_routes(database_url, *, ready_before):
+    """List P10 blocks and allows ready for P7 routing or past their score deadline."""
+    with connect(database_url) as conn:
+        return conn.execute(
+            """SELECT p.id AS prompt_id, p.text, t.action AS throttle_action,
+                      t.reason AS throttle_reason, t.decided_at,
+                      g.malicious_score, g.attack_type, g.model_version, g.reason,
+                      g.checked_at
+               FROM throttle_decisions t
+               JOIN guard_results g ON g.prompt_id = t.prompt_id
+               JOIN prompts p ON p.id = t.prompt_id
+               WHERE g.decision = 'pending'
+                 AND (t.action = 'block' OR (t.action = 'allow'
+                   AND (g.malicious_score IS NOT NULL OR t.decided_at <= %s)))
+               ORDER BY t.decided_at, t.prompt_id""",
+            (ready_before,),
+        ).fetchall()
+
+
+def get_unpublished_allowed_prompts(database_url, limit=100):
+    """Read the durable allowed-prompt outbox for at-least-once Kafka publishing."""
+    with connect(database_url) as conn:
+        return conn.execute(
+            """SELECT o.prompt_id, p.text, g.model_version
+               FROM allowed_prompt_outbox o
+               JOIN prompts p ON p.id = o.prompt_id
+               JOIN guard_results g ON g.prompt_id = o.prompt_id
+               WHERE o.published_at IS NULL AND g.decision = 'allow'
+               ORDER BY o.created_at, o.prompt_id
+               LIMIT %s""",
+            (limit,),
+        ).fetchall()
+
+
+def mark_allowed_prompts_published(database_url, prompt_ids):
+    if not prompt_ids:
+        return 0
+    with connect(database_url) as conn:
+        result = conn.execute(
+            """UPDATE allowed_prompt_outbox SET published_at = NOW()
+               WHERE prompt_id = ANY(%s) AND published_at IS NULL""",
+            (list(prompt_ids),),
+        )
+    return result.rowcount
+
+
 def get_guard_result(database_url, prompt_id):
     with connect(database_url) as conn:
         row = conn.execute("SELECT * FROM guard_results WHERE prompt_id = %s", (prompt_id,)).fetchone()
@@ -236,3 +321,75 @@ def get_active_source_blocks(database_url, now):
             (now,),
         ).fetchall()
     return {row["source"]: row["blocked_until"] for row in rows}
+
+
+def get_attack_window_rows(database_url, window_start, window_end):
+    """Fetch completed P4 classifications in the event-time interval (start, end]."""
+    with connect(database_url) as conn:
+        return conn.execute(
+            """SELECT p.id AS prompt_id, p.text, p.preprocessing,
+                      p.created_at, g.attack_type
+               FROM prompts p
+               JOIN guard_results g ON g.prompt_id = p.id
+               WHERE p.created_at > %s AND p.created_at <= %s
+                 AND g.malicious_score IS NOT NULL
+                 AND g.attack_type IS NOT NULL
+               ORDER BY p.created_at, p.id""",
+            (window_start, window_end),
+        ).fetchall()
+
+
+def save_attack_aggregate_snapshot(database_url, snapshot, *, history_before=None):
+    """Atomically replace the current P8 snapshot and append its history record."""
+    fields = (
+        snapshot["snapshot_at"], snapshot["window_start"], snapshot["window_end"],
+        Jsonb(snapshot["attack_type_counts"]), Jsonb(snapshot["top_patterns"]),
+    )
+    with connect(database_url) as conn:
+        conn.execute(
+            """INSERT INTO attack_aggregate_history
+                   (snapshot_at, window_start, window_end, attack_type_counts, top_patterns)
+               VALUES (%s, %s, %s, %s, %s)
+               ON CONFLICT (snapshot_at) DO NOTHING""",
+            fields,
+        )
+        if history_before is not None:
+            conn.execute(
+                "DELETE FROM attack_aggregate_history WHERE snapshot_at < %s",
+                (history_before,),
+            )
+        conn.execute(
+            """INSERT INTO attack_aggregate_current
+                   (id, snapshot_at, window_start, window_end, attack_type_counts, top_patterns)
+               VALUES (1, %s, %s, %s, %s, %s)
+               ON CONFLICT (id) DO UPDATE SET
+                   snapshot_at = EXCLUDED.snapshot_at,
+                   window_start = EXCLUDED.window_start,
+                   window_end = EXCLUDED.window_end,
+                   attack_type_counts = EXCLUDED.attack_type_counts,
+                   top_patterns = EXCLUDED.top_patterns
+               WHERE attack_aggregate_current.snapshot_at <= EXCLUDED.snapshot_at""",
+            fields,
+        )
+
+
+def prune_attack_aggregate_history(database_url, before):
+    with connect(database_url) as conn:
+        result = conn.execute(
+            "DELETE FROM attack_aggregate_history WHERE snapshot_at < %s", (before,)
+        )
+    return result.rowcount
+
+
+def get_current_attack_aggregate(database_url):
+    with connect(database_url) as conn:
+        return conn.execute("SELECT * FROM attack_aggregate_current WHERE id = 1").fetchone()
+
+
+def get_attack_aggregate_history(database_url, limit=1000):
+    with connect(database_url) as conn:
+        return conn.execute(
+            """SELECT snapshot_at, window_start, window_end, attack_type_counts, top_patterns
+               FROM attack_aggregate_history ORDER BY snapshot_at DESC LIMIT %s""",
+            (limit,),
+        ).fetchall()

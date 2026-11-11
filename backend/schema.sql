@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS prompts (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- P4 writes score/type/completion while decision stays pending; P7 finalizes the decision.
 CREATE TABLE IF NOT EXISTS guard_results (
     prompt_id UUID PRIMARY KEY REFERENCES prompts(id) ON DELETE CASCADE,
     decision TEXT NOT NULL DEFAULT 'pending'
@@ -64,12 +65,41 @@ CREATE TABLE IF NOT EXISTS throttle_decisions (
     decided_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- P7 transactional outbox: an allowed prompt is retried until Kafka acknowledges it.
+CREATE TABLE IF NOT EXISTS allowed_prompt_outbox (
+    prompt_id UUID PRIMARY KEY REFERENCES prompts(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    published_at TIMESTAMPTZ
+);
+
+-- P8's single current view and timestamped rolling-window history.
+CREATE TABLE IF NOT EXISTS attack_aggregate_current (
+    id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    snapshot_at TIMESTAMPTZ NOT NULL,
+    window_start TIMESTAMPTZ NOT NULL,
+    window_end TIMESTAMPTZ NOT NULL,
+    attack_type_counts JSONB NOT NULL,
+    top_patterns JSONB NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS attack_aggregate_history (
+    snapshot_id BIGSERIAL PRIMARY KEY,
+    snapshot_at TIMESTAMPTZ NOT NULL UNIQUE,
+    window_start TIMESTAMPTZ NOT NULL,
+    window_end TIMESTAMPTZ NOT NULL,
+    attack_type_counts JSONB NOT NULL,
+    top_patterns JSONB NOT NULL
+);
+
 -- P1/P2 snapshot; older prompts are filled only if their event is delivered again.
 ALTER TABLE prompts ADD COLUMN IF NOT EXISTS preprocessing JSONB;
 
 CREATE INDEX IF NOT EXISTS prompts_created_at_idx ON prompts (created_at DESC);
 CREATE INDEX IF NOT EXISTS throttle_decisions_source_time_idx ON throttle_decisions (source, event_time DESC);
 CREATE INDEX IF NOT EXISTS throttle_decisions_bursts_idx ON throttle_decisions (event_time DESC) WHERE burst_started;
+CREATE INDEX IF NOT EXISTS throttle_decisions_allow_decided_idx ON throttle_decisions (decided_at, prompt_id) WHERE action = 'allow';
+CREATE INDEX IF NOT EXISTS allowed_prompt_outbox_pending_idx ON allowed_prompt_outbox (created_at) WHERE published_at IS NULL;
+CREATE INDEX IF NOT EXISTS attack_aggregate_history_snapshot_idx ON attack_aggregate_history (snapshot_at DESC);
 CREATE INDEX IF NOT EXISTS prompts_dataset_prompt_id_idx ON prompts (dataset_prompt_id);
 CREATE INDEX IF NOT EXISTS prompts_source_idx ON prompts (source);
 CREATE INDEX IF NOT EXISTS dataset_prompts_source_split_idx ON dataset_prompts (source_dataset, split);
