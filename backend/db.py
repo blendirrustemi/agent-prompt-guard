@@ -1,6 +1,7 @@
 """Small PostgreSQL helpers; each submission uses a single transaction."""
 
 from pathlib import Path
+from datetime import timedelta
 from uuid import uuid4
 
 import psycopg
@@ -56,13 +57,14 @@ def save_prompt(database_url, text, dataset_prompt_id=None, source="web", prompt
     return serialize_prompt(row)
 
 
-def save_raw_event(database_url, event):
-    """Store a raw event once; redelivery never resets a guard decision."""
+def save_raw_event(database_url, event, preprocessing=None):
+    """Store intake and P1/P2 atomically; preserve the first snapshot and verdict."""
     with connect(database_url) as conn:
         conn.execute(
-            """INSERT INTO prompts (id, text, source, created_at, dataset_prompt_id)
-               VALUES (%s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING""",
-            (event["prompt_id"], event["text"], event["source"], event["created_at"], event["dataset_prompt_id"]),
+            """INSERT INTO prompts (id, text, source, created_at, dataset_prompt_id, preprocessing)
+               VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING""",
+            (event["prompt_id"], event["text"], event["source"], event["created_at"], event["dataset_prompt_id"],
+             Jsonb(preprocessing) if preprocessing is not None else None),
         )
         row = conn.execute("SELECT * FROM prompts WHERE id = %s", (event["prompt_id"],)).fetchone()
         dataset_id = str(row["dataset_prompt_id"]) if row["dataset_prompt_id"] else None
@@ -70,6 +72,11 @@ def save_raw_event(database_url, event):
             event["text"], event["source"], event["dataset_prompt_id"]
         ):
             raise ValueError("Prompt ID already exists with different content or source metadata.")
+        if row["preprocessing"] is None and preprocessing is not None:
+            conn.execute(
+                "UPDATE prompts SET preprocessing = %s WHERE id = %s AND preprocessing IS NULL",
+                (Jsonb(preprocessing), event["prompt_id"]),
+            )
         # Retries can have a new timestamp; preserve the first stored timestamp.
         conn.execute(
             "INSERT INTO guard_results (prompt_id) VALUES (%s) ON CONFLICT (prompt_id) DO NOTHING",
@@ -78,6 +85,21 @@ def save_raw_event(database_url, event):
         result = conn.execute("SELECT decision FROM guard_results WHERE prompt_id = %s", (event["prompt_id"],)).fetchone()
         row["decision"] = result["decision"]
     return serialize_prompt(row)
+
+
+def get_source_context(database_url, source, *, as_of):
+    """Count recently checked decisions, not raw arrivals or dataset labels."""
+    with connect(database_url) as conn:
+        row = conn.execute(
+            """SELECT count(*) FILTER (WHERE g.decision = 'allow') AS allow_count,
+                      count(*) FILTER (WHERE g.decision = 'block') AS block_count,
+                      count(*) FILTER (WHERE g.decision = 'review') AS review_count
+               FROM prompts p JOIN guard_results g ON g.prompt_id = p.id
+               WHERE p.source = %s AND g.checked_at >= %s AND g.checked_at <= %s
+                 AND g.decision IN ('allow', 'block', 'review')""",
+            (source, as_of - timedelta(minutes=10), as_of),
+        ).fetchone()
+    return {**row, "as_of": as_of.isoformat()}
 
 
 def get_prompt(database_url, prompt_id):

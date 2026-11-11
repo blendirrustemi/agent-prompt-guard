@@ -1,4 +1,4 @@
-"""Persist raw prompts. This is the entry point for the future guard stages."""
+"""Run P1/P2 and persist raw prompts; later guard stages extend this path."""
 
 import json
 import logging
@@ -11,6 +11,8 @@ from confluent_kafka import Consumer, KafkaException
 from dotenv import load_dotenv
 
 from backend import db
+from backend.stream.enrichment import SourceContextCache
+from backend.stream.preprocessing import preprocess_prompt
 from .events import validate_raw_event
 from .topics import PROMPTS_RAW, bootstrap_servers
 
@@ -18,7 +20,7 @@ LOGGER = logging.getLogger(__name__)
 GROUP_ID = "pijd-intake-v1"
 
 
-def process_message(consumer, message, database_url):
+def process_message(consumer, message, database_url, source_context_cache=None):
     """Finish storage before committing; permanent bad records are logged and skipped."""
     location = f"{message.topic()}:{message.partition()}:{message.offset()}"
     try:
@@ -26,7 +28,9 @@ def process_message(consumer, message, database_url):
         if payload is None:
             raise ValueError("Raw prompt cannot be a tombstone.")
         event = validate_raw_event(json.loads(payload))
-        prompt = db.save_raw_event(database_url, event)
+        cache = source_context_cache if source_context_cache is not None else SourceContextCache(database_url)
+        preprocessing = preprocess_prompt(event["text"], cache.get(event["source"]))
+        prompt = db.save_raw_event(database_url, event, preprocessing=preprocessing)
     except (ValueError, UnicodeDecodeError, psycopg.IntegrityError, psycopg.DataError) as error:
         # PostgreSQL's detailed error text can contain a prompt; log only its error class.
         reason = str(error) if isinstance(error, ValueError) and not isinstance(error, UnicodeDecodeError) else type(error).__name__
@@ -48,6 +52,8 @@ def main():
         "auto.offset.reset": "earliest",
     })
     running = True
+    database_url = os.getenv("DATABASE_URL", "postgresql://localhost:5432/pijd")
+    source_context_cache = SourceContextCache(database_url)
 
     def stop(signum, frame):
         nonlocal running
@@ -64,7 +70,7 @@ def main():
                 continue
             if message.error():
                 raise KafkaException(message.error())
-            process_message(consumer, message, os.getenv("DATABASE_URL", "postgresql://localhost:5432/pijd"))
+            process_message(consumer, message, database_url, source_context_cache)
     except (psycopg.Error, KafkaException) as error:
         LOGGER.error("Consumer stopped without advancing further: %s", type(error).__name__)
         raise SystemExit(1) from None

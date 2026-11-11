@@ -9,17 +9,32 @@ Docker Compose runs the services together: Kafka carries incoming prompts, Pytho
 
 ### Implemented intake milestone
 
-The current path is **browser → Flask → `prompts_raw` → one Python consumer → PostgreSQL**.
-Docker Compose starts Flask, the consumer, Kafka and PostgreSQL; a one-shot initialization
+The current path is **browser → Flask → `prompts_raw` → one Python consumer (P1/P2) → PostgreSQL**.
+Docker Compose starts Flask, the intake and burst workers, Kafka and PostgreSQL; a one-shot initialization
 service creates the tables and topics. The consumer is the entry point for future guard stages.
-It currently saves prompts with a `pending` decision and does not classify or invoke an agent.
+It saves original prompts, P1/P2 preprocessing, and a `pending` decision atomically;
+it does not classify or invoke an agent. P1 derives an NFC/whitespace-cleaned copy
+and original-text character/word/symbol features. P2 supplies per-source allow,
+block, and review counts from the last ten minutes of checked decisions, with a
+30-second process-local cache. These fields are stored in `prompts.preprocessing`;
+matching redelivery preserves the first snapshot and any completed verdict.
+Existing rows remain valid without a snapshot until redelivered. History counts
+exclude pending records and ground-truth dataset labels, and are context rather
+than routing/throttling decisions.
+
+The `backend.intake.replay` command reads imported dataset rows, selecting by
+dataset/split and optional label/attack group, and publishes the same raw events
+at a configurable rate with round-robin simulated sources. Each new submission
+has a fresh UUID and retains its dataset link. Invalid/overlength rows are skipped
+without truncation; successive invocations provide burst/drift test traffic.
 Separately, the optional LangChain/Ollama worker consumes `prompts_allowed`, checks the stored
 `allow` decision, and records outcomes in `agent_runs`. A temporary guard stub supplies that
 demo path; neither the stub nor the agent is started by the default intake stack.
 
 The diagram and Excel work plan describe the full target. Their `raw_prompts` label maps to
 the implemented `prompts_raw`; `clean_prompts` maps to the implemented `prompts_allowed` agent
-topic. `prompts_labels` is reserved. No intermediate topics are needed for this milestone.
+topic. `prompts_labels` is reserved; P10 additionally publishes `throttle_decisions`
+for future P7 routing.
 
 The version-two JSON event has `schema_version`, `prompt_id`, `text`, `source`, `created_at`
 and nullable `dataset_prompt_id`. `source` is the source/IP identifier referred to as `source_ip`
@@ -32,6 +47,8 @@ pending result atomically, then commits its Kafka offset. Matching redelivery do
 a stored decision. Invalid events are logged with topic/partition/offset and skipped; transient
 storage or offset failures stop the consumer for Compose to restart. See the [README](../README.md)
 for commands and the [database sketch](database-schema.dbml) for the current five tables.
+The database PNG predates the preprocessing column and source index; DBML/SQL
+describe the current schema. P1/P2 and P9/P10 are implemented; P3–P8 remain planned.
 
 ### Implemented P9–P10: burst detection and rate limiting
 
@@ -40,9 +57,15 @@ P9 counts all prompts per source in a sliding event-time window; it needs no cla
 matching its position beside P3/P5. P10 blocks a source for a cooldown once the window reaches a
 threshold (defaults: 10 prompts in 60 s, 300 s block). For every prompt, P10 stores its decision
 in the `throttle_decisions` table (IP block metrics, kept for learning) and publishes it to the
-`throttle_decisions` topic keyed by `prompt_id`. P7 consumes that topic: `block` is an instant
+`throttle_decisions` topic keyed by `prompt_id`. P7 will consume that topic: `block` is an instant
 override before score routing, `allow` leaves routing to the model scores. The event contract is
 in the [README](../README.md#burst-detection-and-rate-limiting-p9p10).
+
+Both workers can create the raw prompt row. If the burst worker stores it first,
+the intake worker fills its null preprocessing; if intake runs first, burst storage
+preserves the snapshot. Each worker has its own consumer group and offset commits.
+P2 reads final `guard_results`, not the separate P10 decisions; throttling will enter
+the final verdict through P7, once routing is integrated.
 
 ## Stages and ownership
 
