@@ -64,8 +64,12 @@ CREATE TABLE IF NOT EXISTS throttle_decisions (
     decided_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- P1/P2 snapshot; older prompts are filled only if their event is delivered again.
+ALTER TABLE prompts ADD COLUMN IF NOT EXISTS preprocessing JSONB;
+
 CREATE INDEX IF NOT EXISTS prompts_created_at_idx ON prompts (created_at DESC);
 CREATE INDEX IF NOT EXISTS throttle_decisions_source_time_idx ON throttle_decisions (source, event_time DESC);
 CREATE INDEX IF NOT EXISTS throttle_decisions_bursts_idx ON throttle_decisions (event_time DESC) WHERE burst_started;
 CREATE INDEX IF NOT EXISTS prompts_dataset_prompt_id_idx ON prompts (dataset_prompt_id);
+CREATE INDEX IF NOT EXISTS prompts_source_idx ON prompts (source);
 CREATE INDEX IF NOT EXISTS dataset_prompts_source_split_idx ON dataset_prompts (source_dataset, split);

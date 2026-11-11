@@ -93,6 +93,10 @@ class DeliveryTests(unittest.TestCase):
 class ConsumerTests(unittest.TestCase):
     def setUp(self):
         self.event = build_raw_event("Hello")
+        cache_patch = patch("backend.intake.consumer.SourceContextCache")
+        self.cache = cache_patch.start().return_value
+        self.cache.get.return_value = {"allow_count": 0, "block_count": 0, "review_count": 0, "as_of": "2026-11-11T12:00:00+00:00"}
+        self.addCleanup(cache_patch.stop)
         self.message = Mock()
         self.message.value.return_value = json.dumps(self.event).encode()
         self.message.topic.return_value = PROMPTS_RAW
@@ -102,14 +106,24 @@ class ConsumerTests(unittest.TestCase):
 
     def test_database_finishes_before_offset_commit(self):
         order = []
-        def save(url, event):
+        def save(url, event, preprocessing):
             order.append("saved")
+            self.assertEqual(preprocessing["cleaned_text"], event["text"])
+            self.assertEqual(preprocessing["source_context"], self.cache.get.return_value)
             return {"id": event["prompt_id"]}
         self.consumer.commit.side_effect = lambda **kwargs: order.append("committed")
         with patch("backend.intake.consumer.db.save_raw_event", side_effect=save):
             process_message(self.consumer, self.message, "unused")
         self.assertEqual(order, ["saved", "committed"])
         self.consumer.commit.assert_called_once_with(message=self.message, asynchronous=False)
+
+    def test_source_history_outage_does_not_store_or_commit(self):
+        self.cache.get.side_effect = psycopg.OperationalError("down")
+        with patch("backend.intake.consumer.db.save_raw_event") as save:
+            with self.assertRaises(psycopg.OperationalError):
+                process_message(self.consumer, self.message, "unused")
+        save.assert_not_called()
+        self.consumer.commit.assert_not_called()
 
     def test_database_outage_does_not_commit(self):
         with patch("backend.intake.consumer.db.save_raw_event", side_effect=psycopg.OperationalError("down")):
@@ -159,7 +173,7 @@ class RawEventStorageTests(unittest.TestCase):
             }
         # prompt_id is stored as prompts.id; schema_version describes the message, not the prompt.
         stored = (EVENT_FIELDS - {"schema_version", "prompt_id"}) | {"id"}
-        self.assertEqual(columns, stored)
+        self.assertEqual(columns, stored | {"preprocessing"})
 
     def test_save_raw_event_stores_every_field(self):
         with db.connect(self.url) as conn:

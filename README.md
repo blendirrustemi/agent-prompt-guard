@@ -1,8 +1,9 @@
 # PIJD: Prompt Guard
 
-Current milestone: **browser → Flask → Kafka → intake consumer → PostgreSQL**.
+Current milestone: **browser → Flask → Kafka → intake consumer (P1/P2) → PostgreSQL**.
+Dataset replay feeds the same Kafka/consumer path.
 The browser shows **Queued** after Kafka accepts a prompt, then **Pending check**
-after the consumer saves it. Classification is future work. A separate agent worker
+after the consumer saves its original text and preprocessing snapshot. Classification is future work. A separate agent worker
 and temporary guard stub are available for the allowed-prompt demo (see [Agent](#agent)).
 
 See the [folder guide](docs/folder-guide.md), [current architecture](docs/architecture-work-plan-v2.md),
@@ -107,7 +108,8 @@ simulated sources. Docker may expose a gateway IP for browser requests.
 Labels stay in the dataset table and are not included in these events.
 
 The consumer uses group `pijd-intake-v1`. It saves the prompt and initial pending
-guard result in one PostgreSQL transaction, then commits that record's Kafka offset.
+guard result together with P1/P2 preprocessing in one PostgreSQL transaction,
+then commits that record's Kafka offset.
 Delivery is at least once, with database deduplication by `prompt_id`:
 matching duplicates preserve the original timestamp and any completed guard decision.
 Changed text/source/dataset metadata under an existing ID is logged and skipped.
@@ -117,6 +119,39 @@ topic/partition/offset, then skipped. They remain in the raw topic until Kafka r
 expires (the broker default is seven days). Transient storage or offset-commit
 failures stop the consumer without advancing further; Compose restarts it.
 This worker is the entry point for later guard stages.
+
+### P1/P2 preprocessing
+
+P1 creates a separate `cleaned_text` copy using Unicode NFC normalization and
+collapsed/trimmed whitespace. Case and punctuation remain intact. Its features
+come from the **original** text: `char_count`, whitespace-separated `word_count`,
+and `symbol_ratio` (non-alphanumeric, non-whitespace characters / total characters).
+The original text remains available for model inference and agent execution.
+
+P2 joins the exact `source` identifier to stored guard decisions checked within the
+last ten minutes. `source_context` contains `allow_count`, `block_count`,
+`review_count`, and an ISO UTC `as_of` timestamp. Pending decisions and dataset
+labels are excluded. Zero counts mean no recent evaluated history, not a benign
+verdict. P2 provides context; it does not classify or throttle prompts.
+
+Each consumer process caches source context for 30 seconds; updates can therefore
+take up to 30 seconds to appear. Expired entries are removed on lookups, and the
+cache starts empty after a restart. Counts come from PostgreSQL, so duplicate
+Kafka delivery does not increment them. Before a classifier is integrated, seed
+completed decisions in test fixtures to demonstrate nonzero context.
+
+The processing dictionary is stored in the nullable `prompts.preprocessing` JSONB
+column. A matching redelivery preserves its first snapshot and any guard decision.
+Older rows with no snapshot receive one only if their event is delivered again;
+startup does not reset offsets or backfill old prompts. Re-run the normal Compose
+startup (or `init-db`) to add the column and source index without replacing data.
+HTTP responses and raw Kafka events keep their existing shapes.
+
+Inspect saved preprocessing:
+
+```sh
+docker compose -f backend/compose.yaml exec db psql -U pijd -d pijd -c "SELECT id, preprocessing FROM prompts ORDER BY created_at DESC LIMIT 5;"
+```
 
 Inspect startup, processing, and consumer lag:
 
@@ -145,7 +180,7 @@ The `burst` service (`python -m backend.stream.burst_worker`, group `pijd-burst-
 
 For every prompt the worker stores one row in the `throttle_decisions` table, publishes the same
 decision to the `throttle_decisions` topic (keyed by `prompt_id`), then commits its offset.
-P7 applies `action: "block"` as an override before score routing:
+P7 will apply `action: "block"` as an override before score routing once integrated:
 
 ```json
 {
@@ -218,9 +253,56 @@ python -m backend.intake.producer "Dataset example" --source source_02 --dataset
 A dataset ID must already exist in the same database the consumer uses.
 Its label can be joined to stored predictions afterward; labels do not enter the stream.
 
+## Dataset replay
+
+Replay reads **already-imported rows** from PostgreSQL; it does not download datasets
+or require batch/model packages. With the local Python environment and connections
+configured as above:
+
+```sh
+python -m backend.intake.replay --dataset neuralchemy --split test --limit 100 --rate 5 --sources 192.0.2.1,192.0.2.2
+```
+
+The same command can run inside the existing consumer container, using its internal
+database/Kafka addresses: replace `python` with
+`docker compose -f backend/compose.yaml exec consumer python`.
+
+| Option | Meaning |
+|---|---|
+| `--dataset` | Required: `neuralchemy`, `deepset`, or `jackhhao` |
+| `--split` | Required stored split, e.g. `train`, `validation`, `test`, or `external_test` |
+| `--limit` | Maximum selected rows before validation; default 100 |
+| `--rate` | Maximum prompts/second; default 5; 0 sends without intentional delays |
+| `--sources` | Comma-separated simulated identifiers, assigned round-robin; default `192.0.2.1` |
+| `--label` | Optional row-selection filter: 0 (benign) or 1 (malicious) |
+| `--attack-group` | Optional stored attack-group filter, e.g. `obfuscation` |
+
+Rows are selected in stable UUID order. Each submission has a fresh prompt UUID
+and current timestamp, linked to its original dataset row. Original text is kept;
+invalid or overlength rows are counted and skipped without truncation. Labels and
+attack groups filter the selection but are absent from Kafka events.
+
+Replay reuses one producer and confirms every delivery. Broker/database failures
+stop the command; uncertain delivery reports the prompt ID. The summary prints
+selected, acknowledged, and skipped counts. No valid submissions produces a failing
+exit code. Rerunning intentionally creates new submissions, rather than resuming
+or retrying the previous command. Actual throughput may be below the requested rate.
+
+For a concentrated burst, use one source and a high rate (or 0):
+
+```sh
+python -m backend.intake.replay --dataset neuralchemy --split test --label 1 --limit 100 --rate 0 --sources 192.0.2.99
+```
+
+For a controlled change in attack style, run successive commands with different
+`--attack-group` values, or switch from NeurAlchemy to an external test dataset,
+keeping the desired sources/rate. P9/P10 process this traffic in parallel with
+P1/P2. Drift monitoring remains a later stage. External test examples remain
+excluded from training.
+
 ## Agent
 
-The optional agent runs separately from the default four-service intake stack.
+The optional agent runs separately from the default intake/burst stack.
 
 One LangChain agent with two deterministic tools, running a local model through [Ollama](https://ollama.com):
 
@@ -287,14 +369,15 @@ Publish one from Python with `backend.intake.producer.publish_allowed_prompt(pro
 
 | Table | Contents |
 |---|---|
-| `prompts` | UUID, original text, source, creation time, optional dataset link |
+| `prompts` | UUID, original text, source, creation time, optional dataset link, P1/P2 snapshot |
 | `guard_results` | One result per prompt, initially pending, with optional classifier output |
 | `dataset_prompts` | NeurAlchemy, deepset and jackhhao training/evaluation rows |
 | `agent_runs` | Agent status, response, tools, latency, model, and errors for a handled prompt |
 
 The schema and foreign keys are shown in [database-schema.dbml](docs/database-schema.dbml)
-and [database.png](docs/database.png). Re-running `init-db` preserves data and
-adds the existing dataset-link column to older databases.
+and [database.png](docs/database.png). The PNG predates `preprocessing` and its source
+index; the DBML/SQL include them. Re-running `init-db` preserves data and adds the
+dataset-link/preprocessing columns and indexes to older databases.
 
 For the full batch/notebook environment, use Python 3.13+ and uv:
 
@@ -335,6 +418,11 @@ TEST_DATABASE_URL=postgresql://pijd:pijd@127.0.0.1:55432/pijd_test uv run --proj
 The combined runtime suite also checks the agent's two tools, its stored-decision gate,
 and the `prompts_allowed` Kafka round trip using a fake model. Only the live-model test
 requires Ollama: set `TEST_OLLAMA_MODEL` to a locally available tool-capable model.
+
+P1/P2 and replay tests use local fixtures and controlled clocks. With both test
+connection variables set, they also verify atomic snapshot storage, source history,
+redelivery, and replay through real Kafka and the consumer into PostgreSQL. They
+do not download datasets/models or change existing browser behavior.
 
 If a host's Windows Application Control blocks the Kafka client DLL, run the runtime
 suite inside the existing Linux container instead:

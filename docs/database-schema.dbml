@@ -12,10 +12,12 @@ Table prompts {
   source text [not null, default: 'web']
   created_at timestamptz [not null, default: `now()`]
   dataset_prompt_id uuid [ref: > dataset_prompts.id, note: 'ON DELETE SET NULL; NULL for web prompts, set for replayed dataset rows']
+  preprocessing jsonb [note: 'Nullable P1/P2 snapshot: cleaned_text, original-text features, source_context; preserve first snapshot on redelivery']
 
   indexes {
     created_at [name: 'prompts_created_at_idx', note: 'DESC; used to list the newest prompts']
     dataset_prompt_id [name: 'prompts_dataset_prompt_id_idx']
+    source [name: 'prompts_source_idx']
   }
 }
 
