@@ -29,6 +29,7 @@ Table guard_results {
   reason text
   model_version text
   checked_at timestamptz [note: 'P4 score completion time while pending; P7 final decision time afterward']
+  scored_at timestamptz [note: 'P4 completion time, including failed inference; preserved by P7 routing']
 }
 
 // One row per prompt the agent worker handled.

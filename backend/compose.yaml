@@ -38,6 +38,16 @@ services:
   consumer:
     <<: *python
     command: ["python", "-m", "backend.intake.consumer"]
+    environment:
+      DATABASE_URL: postgresql://pijd:pijd@db:5432/pijd
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      HF_HOME: /model-cache
+      P3_SIMILARITY_THRESHOLD: ${P3_SIMILARITY_THRESHOLD:-0.85}
+      P3_RECENT_SECONDS: ${P3_RECENT_SECONDS:-300}
+      P3_RECENT_CAPACITY: ${P3_RECENT_CAPACITY:-1000}
+      P3_RECENT_MIN_SCORE: ${P3_RECENT_MIN_SCORE:-0.90}
+    volumes:
+      - model_cache:/model-cache
     depends_on:
       init:
         condition: service_completed_successfully
@@ -140,3 +150,4 @@ services:
 volumes:
   postgres_data:
   kafka_data:
+  model_cache:

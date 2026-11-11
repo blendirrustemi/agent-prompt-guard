@@ -6,3 +6,8 @@ datasets==5.1.0
 langchain==1.4.6
 langchain-ollama==1.1.0
 python-dotenv>=1.0,<2.0
+numpy==2.5.4
+scikit-learn==1.9.1
+sentence-transformers==5.7.0
+torch==2.15.0
+transformers==5.22.1

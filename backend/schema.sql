@@ -94,6 +94,9 @@ CREATE TABLE IF NOT EXISTS attack_aggregate_history (
 -- P1/P2 snapshot; older prompts are filled only if their event is delivered again.
 ALTER TABLE prompts ADD COLUMN IF NOT EXISTS preprocessing JSONB;
 
+-- P4 completion survives P7 replacing checked_at with the final routing time.
+ALTER TABLE guard_results ADD COLUMN IF NOT EXISTS scored_at TIMESTAMPTZ;
+
 CREATE INDEX IF NOT EXISTS prompts_created_at_idx ON prompts (created_at DESC);
 CREATE INDEX IF NOT EXISTS throttle_decisions_source_time_idx ON throttle_decisions (source, event_time DESC);
 CREATE INDEX IF NOT EXISTS throttle_decisions_bursts_idx ON throttle_decisions (event_time DESC) WHERE burst_started;

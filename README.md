@@ -1,9 +1,9 @@
 # PIJD: Prompt Guard
 
-Current path: **browser → Flask → Kafka → intake consumer (P1/P2) → PostgreSQL**, with separate P7/P8 and P9/P10 workers.
+Current path: **browser → Flask → Kafka → intake consumer (P1–P4) → PostgreSQL**, with separate P7/P8 and P9/P10 workers.
 Dataset replay feeds the same Kafka/consumer path.
 The browser shows **Queued** after Kafka accepts a prompt, then **Pending check**
-after the consumer saves its original text and preprocessing snapshot. P4 live scoring remains future work. A separate agent worker
+after the consumer saves its original text and preprocessing snapshot. P4 scores with Batch 2, and P7 combines that score with P10 throttling. A separate agent worker
 and temporary guard stub are available for the allowed-prompt demo (see [Agent](#agent)).
 
 See the [folder guide](docs/folder-guide.md), [current architecture](docs/architecture-work-plan-v2.md),
@@ -21,6 +21,14 @@ Open <http://127.0.0.1:5050>. This starts Flask, the intake consumer, P7 router,
 burst worker, Kafka 3.9.1 in KRaft mode, and PostgreSQL 16. A one-shot initialization
 service creates the tables and four topics before Flask and the workers start. Re-running startup
 preserves existing records and messages.
+
+The shared image now includes CPU inference dependencies matching the saved Batch 2/3 artifacts,
+so its first build is larger. The consumer downloads MiniLM into the persistent `model_cache`
+volume, embeds available malicious NeurAlchemy training references, and warms inference before
+subscribing to Kafka. Wait for **`P3/P4 scorer ready`** in its logs before submitting demo prompts.
+`--wait` alone does not establish scorer readiness. Cold starts/backlogs can exceed P7's unchanged
+30-second deadline and enter review; late scores never automatically release finalized prompts.
+Missing or incompatible artifacts stop the consumer with an error.
 
 Ports 5050, 55432, and 9094 must be free. If this project's standalone PostgreSQL
 instance occupies 55432, stop it first without deleting its data:
@@ -73,8 +81,8 @@ browser preserves the input and retry ID, including when the acknowledgement is 
 - Database read outages return 503. The browser continues showing Queued and retries
   its storage check every two seconds until confirmation.
 
-Refresh clears the visible chat without deleting records. Browser submissions do not yet
-run a classifier or invoke the agent automatically. The UI stops polling once storage is
+Refresh clears the visible chat without deleting records. Browser submissions run the classifier;
+the optional agent worker must be started separately to answer allowed prompts. The UI stops polling once storage is
 confirmed. There are no accounts or separate conversation histories.
 
 ## Kafka events and the consumer
@@ -109,7 +117,8 @@ Labels stay in the dataset table and are not included in these events.
 
 The consumer uses group `pijd-intake-v1`. It saves the prompt and initial pending
 guard result together with P1/P2 preprocessing in one PostgreSQL transaction,
-then commits that record's Kafka offset.
+then runs P3/P4 and stores the scoring outcome in a second transaction before committing
+that record's Kafka offset. P4 leaves the final decision to P7.
 Delivery is at least once, with database deduplication by `prompt_id`:
 matching duplicates preserve the original timestamp and any completed guard decision.
 Changed text/source/dataset metadata under an existing ID is logged and skipped.
@@ -118,7 +127,8 @@ Malformed records and database constraint violations are logged with their
 topic/partition/offset, then skipped. They remain in the raw topic until Kafka retention
 expires (the broker default is seven days). Transient storage or offset-commit
 failures stop the consumer without advancing further; Compose restarts it.
-This worker is the entry point for later guard stages.
+Database and offset failures leave the record available for retry. A stored score or `scored_at`
+marker prevents repeated inference, including for previously failed inference.
 
 ### P1/P2 preprocessing
 
@@ -137,8 +147,7 @@ verdict. P2 provides context; it does not classify or throttle prompts.
 Each consumer process caches source context for 30 seconds; updates can therefore
 take up to 30 seconds to appear. Expired entries are removed on lookups, and the
 cache starts empty after a restart. Counts come from PostgreSQL, so duplicate
-Kafka delivery does not increment them. Before a classifier is integrated, seed
-completed decisions in test fixtures to demonstrate nonzero context.
+Kafka delivery does not increment them. Final P7 decisions supply this history.
 
 The processing dictionary is stored in the nullable `prompts.preprocessing` JSONB
 column. A matching redelivery preserves its first snapshot and any guard decision.
@@ -167,6 +176,43 @@ To demonstrate queue recovery, stop the consumer, submit a prompt, then start it
 docker compose -f backend/compose.yaml stop consumer
 docker compose -f backend/compose.yaml start consumer
 ```
+
+### P3 similarity and P4 classification
+
+The intake worker passes original text through one frozen `all-MiniLM-L6-v2` encoder and reuses
+the normalized 384-dimensional embedding for P3, Batch 2 binary inference, and Batch 3 attack typing.
+The original text is preserved. Inference deliberately matches batch evaluation's 256-token
+truncation: an adversarial tail beyond that limit is not checked. Token count/truncation and
+per-stage timing are returned and logged without prompt content or vectors.
+
+P3 adapts the semantic intent/cosine comparison in
+[PromptGuard](https://www.nature.com/articles/s41598-025-31086-y); this is not the paper's complete
+four-layer framework. Its static bank uses only malicious NeurAlchemy `train` rows (all sources,
+no `include_in_baseline` filter), deduplicated by text. A bounded recent bank is our extension:
+after persistence, predictions >= 0.90 are remembered for 300 seconds, up to 1,000 unique prompt IDs.
+Restarting clears recent state. An empty static bank logs a warning and still permits inference.
+No validation/test labels or live dataset labels enter the comparison or classifiers.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `P3_SIMILARITY_THRESHOLD` | `0.85` | Uncalibrated advisory cosine-match threshold |
+| `P3_RECENT_MIN_SCORE` | `0.90` | Minimum Batch 2 probability for online reference insertion |
+| `P3_RECENT_SECONDS` | `300` | Processing-time retention of recent references |
+| `P3_RECENT_CAPACITY` | `1000` | Maximum recent prompt IDs |
+
+P4 saves **Batch 2's unchanged class-1 probability**. Similarity never raises that score.
+Batch 3 supplies one of P8's six attack types only when probability >= 0.5; otherwise type is null.
+Model versions fingerprint both trusted classifier artifacts and their configurations.
+P4 uses `db.save_guard_score`, recording score/type/version and `scored_at`; P7 owns routing.
+`checked_at` is score completion while pending and routing time after finalization; `scored_at`
+preserves P4 completion for future P6. A per-prompt inference failure records a null score/type
+and completion time, allowing P7's existing timeout/failure policy to route to review.
+Late results can fill classifications for already blocked/reviewed prompts without changing decisions.
+
+`ScoringResult.as_dict()` is the in-process contract for future P6 (identity, outcome, score, type,
+version, completion, token/truncation details, advisory similarity and timings). No new topics,
+metric tables, or P6 worker are introduced. P3/P4 metrics and embeddings are not persisted.
+Already committed Kafka records are not automatically rescored; submit fresh prompts to test.
 
 ## Burst detection and rate limiting (P9/P10)
 
@@ -378,7 +424,8 @@ python -m backend.scripts.create_topics
 python -m backend.agent.worker            # keeps running; add --once to stop when the topic is drained
 ```
 
-The real guard does not exist yet, so a **temporary** guard stub stores a decision and publishes the prompt to `prompts_allowed`. Delete `backend/agent/guard_stub.py` once the guard does this:
+The **temporary** guard stub remains available for isolated agent demos. The normal P4/P7 path
+now scores and routes prompts, so the stub is not needed for live guard integration:
 
 ```sh
 python -m backend.agent.guard_stub "What is 15 divided by 3?"
@@ -466,6 +513,17 @@ Fast checks need only the runtime dependencies:
 python -m unittest discover -s backend/tests -v
 node --test frontend/tests/app.test.cjs
 ```
+
+P3/P4 unit tests inject encoder/classifier fixtures and never download models. The artifact
+check loads only the small trusted classifier files. To run the explicit real-MiniLM smoke
+check (including long-prompt parity with Batch 2), use a dedicated initialized test database:
+
+```sh
+TEST_LIVE_SCORER=1 TEST_DATABASE_URL=postgresql://pijd:pijd@127.0.0.1:55432/pijd_test python -m unittest backend.tests.test_scoring.LiveScoringTests -v
+```
+
+That opt-in check can download MiniLM if it is not already cached and prints warm inference
+latencies. It does not invoke Ollama or modify dataset/model artifacts.
 
 Database and Kafka checks are opt-in. Create a dedicated test database once, then run:
 
