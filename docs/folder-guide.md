@@ -9,7 +9,7 @@
 | `backend/` | Flask routes (`app.py`), database helpers (`db.py`), tables (`schema.sql`), dependencies, and Docker configuration. |
 | `backend/scripts/` | Database/topic setup and Compose initialization. |
 | `backend/intake/` | Version-two raw events, publishers, topic names, dataset replay CLI, and the intake consumer. |
-| `backend/stream/` | P1 cleaned copy/features and P2 cached source history in the intake consumer; P9 burst detection and P10 rate limiting in the separate burst worker. |
+| `backend/stream/` | P1/P2 preprocessing; P7 score routing; P8 rolling attack aggregation; P9/P10 burst detection and throttling workers. |
 | `backend/agent/` | LangChain/Ollama agent, two tools, allowed-prompt worker, and temporary guard stub. |
 | `backend/batch/` | Dataset imports and exploratory notebooks, with separate dependencies. |
 | `backend/tests/` | Route, storage, Kafka, agent, and local dataset fixture checks. |
@@ -27,16 +27,17 @@ Separately, **`prompts_allowed` → agent worker → `agent_runs`** answers prom
 stored `allow` decision. The temporary guard stub supplies these decisions until the
 real guard exists; the default Compose intake stack does not start the agent.
 
-In parallel, **`prompts_raw` → burst worker (P9/P10) → `throttle_decisions` (topic for P7) + `throttle_decisions` (table)**
-blocks sources that send too many prompts in a sliding window.
+In parallel, **`prompts_raw` → burst worker (P9/P10) → `throttle_decisions` → P7 router** applies
+immediate source blocks and score-based routing. P8 periodically reads stored P4 results and
+persists rolling attack-type counts and repeated-prompt snapshots.
 
 ## Next steps
 
-Extend the guard stages and add dashboards when their implementation starts:
+Add dashboards for the stored P7/P8 results as a later step:
 
 | Folder | Responsibility |
 |---|---|
-| `backend/stream/` (remaining stages) | Other guard stages, metrics and drift; replace the temporary stub by storing decisions and publishing allowed prompts. |
+| `backend/stream/` (remaining stages) | P4 scoring integration, other guard stages, metrics, and drift. |
 | `backend/dashboard/` | Streamlit graphs and human review pages. |
 
 Replay imported rows with `python -m backend.intake.replay`; select dataset/split,
