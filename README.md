@@ -16,9 +16,9 @@ With Docker running, from the project root:
 docker compose -f backend/compose.yaml up --build -d --wait
 ```
 
-Open <http://127.0.0.1:5050>. This starts Flask, one intake consumer, Kafka 3.9.1
-in KRaft mode, and PostgreSQL 16. A one-shot initialization service creates the
-tables and three topics before Flask and the consumer start. Re-running startup
+Open <http://127.0.0.1:5050>. This starts Flask, one intake consumer, the P9/P10
+burst worker, Kafka 3.9.1 in KRaft mode, and PostgreSQL 16. A one-shot initialization
+service creates the tables and four topics before Flask and the workers start. Re-running startup
 preserves existing records and messages.
 
 Ports 5050, 55432, and 9094 must be free. If this project's standalone PostgreSQL
@@ -83,6 +83,7 @@ confirmed. There are no accounts or separate conversation histories.
 | `prompts_raw` | Raw inputs consumed by the intake worker |
 | `prompts_allowed` | Allowed-prompt publisher and optional agent worker; supplied by the temporary guard stub |
 | `prompts_labels` | Reserved for reviewed/evaluation labels |
+| `throttle_decisions` | P10 rate-limiter decision per raw prompt, for P7 (see [Burst detection](#burst-detection-and-rate-limiting-p9p10)) |
 
 Each topic starts with one partition and replication factor one. Automatic topic
 creation is off. Topic initialization leaves existing topics unchanged.
@@ -130,6 +131,50 @@ To demonstrate queue recovery, stop the consumer, submit a prompt, then start it
 ```sh
 docker compose -f backend/compose.yaml stop consumer
 docker compose -f backend/compose.yaml start consumer
+```
+
+## Burst detection and rate limiting (P9/P10)
+
+The `burst` service (`python -m backend.stream.burst_worker`, group `pijd-burst-v1`) reads
+`prompts_raw` beside the intake consumer:
+
+- **P9** counts every prompt per `source` in a sliding window of `BURST_WINDOW_SECONDS` (default 60),
+  using the event's `created_at`, so replays produce the same bursts.
+- **P10** blocks a source once its window reaches `BURST_THRESHOLD` prompts (default 10). The block
+  lasts `BURST_COOLDOWN_SECONDS` (default 300) and is not extended by traffic during it.
+
+For every prompt the worker stores one row in the `throttle_decisions` table, publishes the same
+decision to the `throttle_decisions` topic (keyed by `prompt_id`), then commits its offset.
+P7 applies `action: "block"` as an override before score routing:
+
+```json
+{
+  "schema_version": 1,
+  "prompt_id": "UUID",
+  "source": "source_01",
+  "action": "block",
+  "reason": "burst_detected",
+  "window_count": 10,
+  "window_seconds": 60,
+  "threshold": 10,
+  "blocked_until": "2026-11-10T12:05:09+00:00",
+  "burst_started": true,
+  "event_time": "2026-11-10T12:00:09+00:00",
+  "decided_at": "2026-11-10T12:00:09.120000+00:00"
+}
+```
+
+`action` is `allow` (`reason` and `blocked_until` null) or `block`, with `reason` set to
+`burst_detected` on the prompt that starts a block (`burst_started: true`, a burst alert) or
+`source_blocked` during the cooldown. Redelivery republishes the stored decision unchanged.
+Active blocks are reloaded from PostgreSQL when the worker restarts.
+
+Trigger a burst and inspect it (in PowerShell, pipe 12 lines the same way):
+
+```sh
+seq 12 | sed 's/^/Burst prompt /' | python -m backend.intake.producer --source source_01
+docker compose -f backend/compose.yaml exec db psql -U pijd -d pijd -c "SELECT source, action, reason, window_count, burst_started FROM throttle_decisions ORDER BY event_time"
+docker compose -f backend/compose.yaml exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:9092 --topic throttle_decisions --from-beginning --timeout-ms 5000
 ```
 
 ## Local Python and command-line publishing

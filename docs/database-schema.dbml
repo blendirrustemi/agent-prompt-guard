@@ -3,7 +3,7 @@
 
 Project agent_prompt_guard {
   database_type: 'PostgreSQL'
-  Note: 'Prompts submitted through the web UI, the guard classifier verdict for each one, the agent runs, and the imported datasets.'
+  Note: 'Prompts submitted through the web UI, the guard classifier verdict for each one, rate-limiter decisions, the agent runs, and the imported datasets.'
 }
 
 Table prompts {
@@ -39,6 +39,26 @@ Table agent_runs {
   model text [note: 'Ollama model used']
   error text [note: 'Why the run failed or was rejected']
   created_at timestamptz [not null, default: `now()`]
+}
+
+// P10 rate-limiter output: one row per prompt seen by the burst worker; also published to throttle_decisions for P7.
+Table throttle_decisions {
+  prompt_id uuid [pk, ref: - prompts.id, note: 'ON DELETE CASCADE']
+  source text [not null, note: 'Source/IP the window is counted for']
+  action text [not null, note: "One of 'allow', 'block'"]
+  reason text [note: "'burst_detected' (started the block), 'source_blocked' (during cooldown), NULL for allow"]
+  window_count integer [not null, note: 'Prompts from this source in the window, including this one']
+  window_seconds integer [not null, note: 'Window length used for this decision']
+  threshold integer [not null, note: 'Burst threshold used for this decision']
+  blocked_until timestamptz [note: 'End of the block; NULL for allow']
+  burst_started boolean [not null, default: false, note: 'TRUE on the prompt that started a block (burst alert)']
+  event_time timestamptz [not null, note: "The raw event's created_at"]
+  decided_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (source, event_time) [name: 'throttle_decisions_source_time_idx', note: 'event_time DESC']
+    event_time [name: 'throttle_decisions_bursts_idx', note: 'DESC, partial: WHERE burst_started']
+  }
 }
 
 // Imported training and evaluation data; replayed rows are linked from prompts.dataset_prompt_id.
