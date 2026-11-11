@@ -309,6 +309,30 @@ rows are flagged using `neuralchemy_v1`, excluding `control` and `chain_of_thoug
 External deepset/jackhhao rows remain held out of baseline training. Import IDs use
 the original source split and row index, so filtering and deduplication do not renumber them.
 
+Train and save the B3 multiclass attack-type classifier after the NeurAlchemy rows
+are imported:
+
+```sh
+uv run --project backend/batch --locked python backend/batch/train_batch3.py
+```
+
+B3 uses the imported six-way `attack_group` labels for malicious NeurAlchemy rows,
+preserves their train/validation/test splits, and saves its classifier and metrics
+under `backend/batch/models/batch3/`.
+
+Evaluate the saved B1/B2 artifacts on imported external-test rows and save a JSON
+report (the command also prints JSON when `--output` is omitted):
+
+```sh
+uv run --project backend/batch --locked python -m backend.batch.evaluation --output evaluation.json
+```
+
+The report separates deepset and jackhhao and includes malicious-class precision,
+recall, F1, macro-F1, false-positive rate, ROC-AUC, confusion counts, and per-prompt
+inference latency. Latency includes text feature or embedding generation and prediction,
+but excludes model loading. Cross-dataset duplicate prompts are represented by whichever
+source the importer retained.
+
 ## Checks
 
 Fast checks need only the runtime dependencies:
