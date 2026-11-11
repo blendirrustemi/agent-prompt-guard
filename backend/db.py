@@ -163,3 +163,54 @@ def get_agent_run(database_url, prompt_id):
     with connect(database_url) as conn:
         row = conn.execute("SELECT * FROM agent_runs WHERE prompt_id = %s", (prompt_id,)).fetchone()
     return serialize_agent_run(row) if row else None
+
+
+THROTTLE_FIELDS = (
+    "prompt_id", "source", "action", "reason", "window_count", "window_seconds", "threshold",
+    "blocked_until", "burst_started", "event_time", "decided_at",
+)
+
+
+def serialize_throttle_decision(row):
+    """Return the stored P10 decision with the same fields as the `throttle_decisions` event (minus schema_version)."""
+    return {
+        **{field: row[field] for field in THROTTLE_FIELDS},
+        "prompt_id": str(row["prompt_id"]),
+        "blocked_until": row["blocked_until"].isoformat() if row["blocked_until"] else None,
+        "event_time": row["event_time"].isoformat(),
+        "decided_at": row["decided_at"].isoformat(),
+    }
+
+
+def save_throttle_decision(database_url, decision):
+    """Store a P10 decision once; on redelivery the first stored decision is returned unchanged."""
+    columns = ", ".join(THROTTLE_FIELDS)
+    placeholders = ", ".join(["%s"] * len(THROTTLE_FIELDS))
+    with connect(database_url) as conn:
+        conn.execute(
+            f"INSERT INTO throttle_decisions ({columns}) VALUES ({placeholders}) ON CONFLICT (prompt_id) DO NOTHING",
+            tuple(decision[field] for field in THROTTLE_FIELDS),
+        )
+        row = conn.execute(
+            "SELECT * FROM throttle_decisions WHERE prompt_id = %s", (decision["prompt_id"],)
+        ).fetchone()
+    return serialize_throttle_decision(row)
+
+
+def get_throttle_decision(database_url, prompt_id):
+    with connect(database_url) as conn:
+        row = conn.execute("SELECT * FROM throttle_decisions WHERE prompt_id = %s", (prompt_id,)).fetchone()
+    return serialize_throttle_decision(row) if row else None
+
+
+def get_active_source_blocks(database_url, now):
+    """Return {source: blocked_until} for blocks still running at `now`, to restore P10 after a restart."""
+    with connect(database_url) as conn:
+        rows = conn.execute(
+            """SELECT source, MAX(blocked_until) AS blocked_until
+               FROM throttle_decisions
+               WHERE burst_started AND blocked_until > %s
+               GROUP BY source""",
+            (now,),
+        ).fetchall()
+    return {row["source"]: row["blocked_until"] for row in rows}
