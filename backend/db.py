@@ -38,6 +38,7 @@ def serialize_guard_result(row):
         "reason": row["reason"],
         "model_version": row["model_version"],
         "checked_at": row["checked_at"].isoformat() if row["checked_at"] else None,
+        "scored_at": row["scored_at"].isoformat() if row.get("scored_at") else None,
     }
 
 
@@ -102,6 +103,16 @@ def get_source_context(database_url, source, *, as_of):
     return {**row, "as_of": as_of.isoformat()}
 
 
+def get_similarity_training_rows(database_url):
+    """P3 references: only malicious training rows, never evaluation/feedback labels."""
+    with connect(database_url) as conn:
+        return conn.execute(
+            """SELECT id, text FROM dataset_prompts
+               WHERE source_dataset = 'neuralchemy' AND split = 'train' AND label = 1
+               ORDER BY id"""
+        ).fetchall()
+
+
 def get_prompt(database_url, prompt_id):
     with connect(database_url) as conn:
         row = conn.execute(
@@ -149,11 +160,11 @@ def save_guard_score(
             """UPDATE guard_results
                SET malicious_score = %s, attack_type = %s,
                    reason = CASE WHEN decision = 'pending' THEN %s ELSE reason END,
-                   model_version = %s,
+                   model_version = %s, scored_at = COALESCE(%s, NOW()),
                    checked_at = CASE WHEN decision = 'pending' THEN COALESCE(%s, NOW()) ELSE checked_at END
                WHERE prompt_id = %s
                RETURNING *""",
-            (malicious_score, attack_type, reason, model_version, checked_at, prompt_id),
+            (malicious_score, attack_type, reason, model_version, checked_at, checked_at, prompt_id),
         ).fetchone()
     return serialize_guard_result(row) if row else None
 

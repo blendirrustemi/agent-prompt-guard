@@ -9,11 +9,12 @@ Docker Compose runs the services together: Kafka carries incoming prompts, Pytho
 
 ### Implemented intake milestone
 
-The current path is **browser → Flask → `prompts_raw` → one Python consumer (P1/P2) → PostgreSQL**.
+The current path is **browser → Flask → `prompts_raw` → one Python consumer (P1–P4) → PostgreSQL**.
 Docker Compose starts Flask, the intake and burst workers, Kafka and PostgreSQL; a one-shot initialization
 service creates the tables and topics. The consumer is the entry point for future guard stages.
 It saves original prompts, P1/P2 preprocessing, and a `pending` decision atomically;
-it does not classify or invoke an agent. P1 derives an NFC/whitespace-cleaned copy
+it then runs P3/P4 before committing the Kafka offset, leaving final routing to P7.
+P1 derives an NFC/whitespace-cleaned copy
 and original-text character/word/symbol features. P2 supplies per-source allow,
 block, and review counts from the last ten minutes of checked decisions, with a
 30-second process-local cache. These fields are stored in `prompts.preprocessing`;
@@ -42,12 +43,29 @@ Docker may expose a gateway IP for browser requests; simulated sources support l
 Ground-truth labels remain in `dataset_prompts`, outside the prompt event.
 
 Flask returns HTTP 202 after Kafka acknowledges a prompt. The consumer stores the prompt and
-pending result atomically, then commits its Kafka offset. Matching redelivery does not overwrite
+pending result atomically, then persists P4's outcome before committing its Kafka offset. Matching redelivery does not overwrite
 a stored decision. Invalid events are logged with topic/partition/offset and skipped; transient
 storage or offset failures stop the consumer for Compose to restart. See the [README](../README.md)
 for commands and the [database sketch](database-schema.dbml) for the current schema.
 The database PNG predates the preprocessing column and source index; DBML/SQL
-describe the current schema. P1/P2, P7/P8, and P9/P10 are implemented; P3–P6 remain planned.
+describe the current schema. P1–P4, P7/P8, and P9/P10 are implemented; P5/P6 remain planned.
+
+### Implemented P3–P4: similarity and classification
+
+One frozen MiniLM encoder supplies original-text embeddings to a stateful cosine-similarity probe,
+Batch 2's binary classifier, and Batch 3's six-way attack classifier. P3's advisory reference bank
+contains only malicious NeurAlchemy training rows plus bounded recent high-confidence predictions.
+It adapts the semantic-intent comparison in [PromptGuard](https://www.nature.com/articles/s41598-025-31086-y),
+with online memory as a project extension. It does not alter the binary probability or route prompts.
+Batch 3 runs for probability >= 0.5; lower scores have no attack type. Inference matches the saved
+256-token truncation; original text is preserved and truncation is reported explicitly.
+
+P4 calls `save_guard_score` for successful and failed inference, then intake commits Kafka.
+Only required classification fields are persisted; similarity/timing details stay in the returned
+result and logs. `scored_at` preserves P4 completion after P7 replaces `checked_at` with routing time.
+P6 can use these fields or the returned result later; no new Kafka topics or metrics tables are added.
+Startup loads and warms models/references before polling. Wait for the scorer-ready log; cold-start
+traffic or backlog can exceed the unchanged P7 deadline. Final review/block decisions are never reopened.
 
 ### Implemented P9–P10: burst detection and rate limiting
 
@@ -96,7 +114,7 @@ These stages branch as shown in the diagram; they are not a single sequential P1
 
 ## Batch models and feedback
 
-- **B1:** TF-IDF + Logistic Regression; **B2:** frozen transformer embeddings + Logistic Regression. Train on the cleaned NeurAlchemy `core` data, retaining `neuralchemy_v1` and excluding `control` and `chain_of_thought`.
+- **B1:** TF-IDF + Logistic Regression; **B2:** frozen transformer embeddings + Logistic Regression. The team uses all imported NeurAlchemy `core` rows, preserving train/validation/test splits; the baseline flag is not a training filter. B2 is deployed in P4 following the team's model comparison.
 - Compare B1/B2 on the same splits; select the binary model for P4 using validation macro-F1. Evaluate both on the standard test set and the entirely held-out deepset/prompt-injections and jackhhao/jailbreak-classification datasets. Report precision, recall, F1, FPR, ROC-AUC and latency alongside a length-only baseline. Holding out an attack family is optional.
 - **B3:** classify malicious prompts by attack type; validate category groupings and counts before fixing the taxonomy. **B4:** retrain from reviewed labels on a schedule or following drift alerts; evaluate candidates before updating P4. External test datasets stay out of training and model selection.
 
