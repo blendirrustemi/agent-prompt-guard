@@ -1,6 +1,6 @@
 # PIJD: Prompt Guard
 
-Current path: **browser → Flask → Kafka → intake consumer (P1–P4) → PostgreSQL**, with separate P7/P8 and P9/P10 workers.
+Current path: **browser → Flask → Kafka → intake consumer (P1–P5) → PostgreSQL**, with separate P7/P8 and P9/P10 workers.
 Dataset replay feeds the same Kafka/consumer path.
 The browser shows **Queued** after Kafka accepts a prompt, then **Pending check**
 after the consumer saves its original text and preprocessing snapshot. P4 scores with Batch 2, and P7 combines that score with P10 throttling. A separate agent worker
@@ -22,10 +22,10 @@ burst worker, Kafka 3.9.1 in KRaft mode, and PostgreSQL 16. A one-shot initializ
 service creates the tables and four topics before Flask and the workers start. Re-running startup
 preserves existing records and messages.
 
-The shared image now includes CPU inference dependencies matching the saved Batch 2/3 artifacts,
+The shared image now includes CPU inference dependencies matching the saved Batch 2/3 artifacts and River for P5,
 so its first build is larger. The consumer downloads MiniLM into the persistent `model_cache`
 volume, embeds available malicious NeurAlchemy training references, and warms inference before
-subscribing to Kafka. Wait for **`P3/P4 scorer ready`** in its logs before submitting demo prompts.
+subscribing to Kafka. Wait for **`P3/P4 scorer ready`** and **`P5 detector ready`** in its logs before submitting demo prompts.
 `--wait` alone does not establish scorer readiness. Cold starts/backlogs can exceed P7's unchanged
 30-second deadline and enter review; late scores never automatically release finalized prompts.
 Missing or incompatible artifacts stop the consumer with an error.
@@ -118,7 +118,8 @@ Labels stay in the dataset table and are not included in these events.
 The consumer uses group `pijd-intake-v1`. It saves the prompt and initial pending
 guard result together with P1/P2 preprocessing in one PostgreSQL transaction,
 then runs P3/P4 and stores the scoring outcome in a second transaction before committing
-that record's Kafka offset. P4 leaves the final decision to P7.
+that record's Kafka offset. P5 then stores its anomaly outcome before the offset is committed.
+P4 leaves the final decision to P7.
 Delivery is at least once, with database deduplication by `prompt_id`:
 matching duplicates preserve the original timestamp and any completed guard decision.
 Changed text/source/dataset metadata under an existing ID is logged and skipped.
@@ -209,10 +210,29 @@ preserves P4 completion for future P6. A per-prompt inference failure records a 
 and completion time, allowing P7's existing timeout/failure policy to route to review.
 Late results can fill classifications for already blocked/reviewed prompts without changing decisions.
 
-`ScoringResult.as_dict()` is the in-process contract for future P6 (identity, outcome, score, type,
-version, completion, token/truncation details, advisory similarity and timings). No new topics,
-metric tables, or P6 worker are introduced. P3/P4 metrics and embeddings are not persisted.
+`ScoringResult.as_dict()` remains the in-process handoff for P6 (identity, outcome, score, type,
+version, completion, token/truncation details, advisory similarity and timings). P3 similarity is
+also saved with `guard_results` so P5 retries and restart recovery use the original value. Embeddings
+and timing details are not persisted.
 Already committed Kafka records are not automatically rescored; submit fresh prompts to test.
+
+### P5 streaming anomaly detection
+
+P5 runs in the intake consumer after P4 and uses River Half-Space Trees over seven bounded numeric
+features: normalized P1 character and word counts, symbol ratio, normalized P3 cosine similarity,
+P3 availability, P4 malicious probability, and P4 availability. Counts are divided by the 8,000
+character input limit; cosine similarity is mapped from `[-1, 1]` to `[0, 1]`. Missing P3/P4
+signals use zero plus an availability flag. HST receives fixed `[0, 1]` feature limits.
+
+The detector uses 10 trees, height 8, window size 250, and seed 42. It scores before learning from
+each prompt. The first 250 observations have `p5_status = 'warming_up'` and no anomaly score; later
+rows have `p5_status = 'scored'`. A higher HST score indicates more unusual behavior, not a malicious
+verdict. P5 is informational and does not affect P7 routing.
+
+P3 similarity, `anomaly_score`, P5 status, feature version, and processing time are stored in
+`guard_results`. A database sequence preserves learning order, and the feature version makes
+redelivery idempotent. On startup the detector restores its recent two HST windows from stored
+P1/P3/P4 inputs, including the window offset. No Kafka topic is added.
 
 ## Burst detection and rate limiting (P9/P10)
 
@@ -459,14 +479,14 @@ Publish one from Python with `backend.intake.producer.publish_allowed_prompt(pro
 | Table | Contents |
 |---|---|
 | `prompts` | UUID, original text, source, creation time, optional dataset link, P1/P2 snapshot |
-| `guard_results` | One result per prompt, initially pending, with optional classifier output |
+| `guard_results` | One result per prompt, including P3 similarity, P4 classification, P5 anomaly score/status, and P7 decision |
 | `dataset_prompts` | NeurAlchemy, deepset and jackhhao training/evaluation rows |
 | `agent_runs` | Agent status, response, tools, latency, model, and errors for a handled prompt |
 
 The schema and foreign keys are shown in [database-schema.dbml](docs/database-schema.dbml)
-and [database.png](docs/database.png). The PNG predates `preprocessing` and its source
-index; the DBML/SQL include them. Re-running `init-db` preserves data and adds the
-dataset-link/preprocessing columns and indexes to older databases.
+and [database.png](docs/database.png). The PNG predates `preprocessing`, P3/P5 fields, and
+the source index; the DBML/SQL include them. Re-running `init-db` preserves data and adds the
+dataset-link, preprocessing, P3/P5 columns and indexes to older databases.
 
 For the full batch/notebook environment, use Python 3.13+ and uv:
 

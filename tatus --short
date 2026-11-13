@@ -1,0 +1,109 @@
+[1mdiff --git a/README.md b/README.md[m
+[1mindex b05e2c8..4337d59 100644[m
+[1m--- a/README.md[m
+[1m+++ b/README.md[m
+[36m@@ -1,6 +1,6 @@[m
+ # PIJD: Prompt Guard[m
+ [m
+[31m-Current path: **browser → Flask → Kafka → intake consumer (P1–P4) → PostgreSQL**, with separate P7/P8 and P9/P10 workers.[m
+[32m+[m[32mCurrent path: **browser → Flask → Kafka → intake consumer (P1–P5) → PostgreSQL**, with separate P7/P8 and P9/P10 workers.[m
+ Dataset replay feeds the same Kafka/consumer path.[m
+ The browser shows **Queued** after Kafka accepts a prompt, then **Pending check**[m
+ after the consumer saves its original text and preprocessing snapshot. P4 scores with Batch 2, and P7 combines that score with P10 throttling. A separate agent worker[m
+[36m@@ -22,10 +22,10 @@[m [mburst worker, Kafka 3.9.1 in KRaft mode, and PostgreSQL 16. A one-shot initializ[m
+ service creates the tables and four topics before Flask and the workers start. Re-running startup[m
+ preserves existing records and messages.[m
+ [m
+[31m-The shared image now includes CPU inference dependencies matching the saved Batch 2/3 artifacts,[m
+[32m+[m[32mThe shared image now includes CPU inference dependencies matching the saved Batch 2/3 artifacts and River for P5,[m
+ so its first build is larger. The consumer downloads MiniLM into the persistent `model_cache`[m
+ volume, embeds available malicious NeurAlchemy training references, and warms inference before[m
+[31m-subscribing to Kafka. Wait for **`P3/P4 scorer ready`** in its logs before submitting demo prompts.[m
+[32m+[m[32msubscribing to Kafka. Wait for **`P3/P4 scorer ready`** and **`P5 detector ready`** in its logs before submitting demo prompts.[m
+ `--wait` alone does not establish scorer readiness. Cold starts/backlogs can exceed P7's unchanged[m
+ 30-second deadline and enter review; late scores never automatically release finalized prompts.[m
+ Missing or incompatible artifacts stop the consumer with an error.[m
+[36m@@ -118,7 +118,8 @@[m [mLabels stay in the dataset table and are not included in these events.[m
+ The consumer uses group `pijd-intake-v1`. It saves the prompt and initial pending[m
+ guard result together with P1/P2 preprocessing in one PostgreSQL transaction,[m
+ then runs P3/P4 and stores the scoring outcome in a second transaction before committing[m
+[31m-that record's Kafka offset. P4 leaves the final decision to P7.[m
+[32m+[m[32mthat record's Kafka offset. P5 then stores its anomaly outcome before the offset is committed.[m
+[32m+[m[32mP4 leaves the final decision to P7.[m
+ Delivery is at least once, with database deduplication by `prompt_id`:[m
+ matching duplicates preserve the original timestamp and any completed guard decision.[m
+ Changed text/source/dataset metadata under an existing ID is logged and skipped.[m
+[36m@@ -209,11 +210,30 @@[m [mpreserves P4 completion for future P6. A per-prompt inference failure records a[m
+ and completion time, allowing P7's existing timeout/failure policy to route to review.[m
+ Late results can fill classifications for already blocked/reviewed prompts without changing decisions.[m
+ [m
+[31m-`ScoringResult.as_dict()` is the in-process contract for future P6 (identity, outcome, score, type,[m
+[31m-version, completion, token/truncation details, advisory similarity and timings). No new topics,[m
+[31m-metric tables, or P6 worker are introduced. P3/P4 metrics and embeddings are not persisted.[m
+[32m+[m[32m`ScoringResult.as_dict()` remains the in-process handoff for P6 (identity, outcome, score, type,[m
+[32m+[m[32mversion, completion, token/truncation details, advisory similarity and timings). P3 similarity is[m
+[32m+[m[32malso saved with `guard_results` so P5 retries and restart recovery use the original value. Embeddings[m
+[32m+[m[32mand timing details are not persisted.[m
+ Already committed Kafka records are not automatically rescored; submit fresh prompts to test.[m
+ [m
+[32m+[m[32m### P5 streaming anomaly detection[m
+[32m+[m
+[32m+[m[32mP5 runs in the intake consumer after P4 and uses River Half-Space Trees over seven bounded numeric[m
+[32m+[m[32mfeatures: normalized P1 character and word counts, symbol ratio, normalized P3 cosine similarity,[m
+[32m+[m[32mP3 availability, P4 malicious probability, and P4 availability. Counts are divided by the 8,000[m
+[32m+[m[32mcharacter input limit; cosine similarity is mapped from `[-1, 1]` to `[0, 1]`. Missing P3/P4[m
+[32m+[m[32msignals use zero plus an availability flag. HST receives fixed `[0, 1]` feature limits.[m
+[32m+[m
+[32m+[m[32mThe detector uses 10 trees, height 8, window size 250, and seed 42. It scores before learning from[m
+[32m+[m[32meach prompt. The first 250 observations have `p5_status = 'warming_up'` and no anomaly score; later[m
+[32m+[m[32mrows have `p5_status = 'scored'`. A higher HST score indicates more unusual behavior, not a malicious[m
+[32m+[m[32mverdict. P5 is informational and does not affect P7 routing.[m
+[32m+[m
+[32m+[m[32mP3 similarity, `anomaly_score`, P5 status, feature version, and processing time are stored in[m
+[32m+[m[32m`guard_results`. A database sequence preserves learning order, and the feature version makes[m
+[32m+[m[32mredelivery idempotent. On startup the detector restores its recent two HST windows from stored[m
+[32m+[m[32mP1/P3/P4 inputs, including the window offset. No Kafka topic is added.[m
+[32m+[m
+ ## Burst detection and rate limiting (P9/P10)[m
+ [m
+ The `burst` service (`python -m backend.stream.burst_worker`, group `pijd-burst-v1`) reads[m
+[36m@@ -459,14 +479,14 @@[m [mPublish one from Python with `backend.intake.producer.publish_allowed_prompt(pro[m
+ | Table | Contents |[m
+ |---|---|[m
+ | `prompts` | UUID, original text, source, creation time, optional dataset link, P1/P2 snapshot |[m
+[31m-| `guard_results` | One result per prompt, initially pending, with optional classifier output |[m
+[32m+[m[32m| `guard_results` | One result per prompt, including P3 similarity, P4 classification, P5 anomaly score/status, and P7 decision |[m
+ | `dataset_prompts` | NeurAlchemy, deepset and jackhhao training/evaluation rows |[m
+ | `agent_runs` | Agent status, response, tools, latency, model, and errors for a handled prompt |[m
+ [m
+ The schema and foreign keys are shown in [database-schema.dbml](docs/database-schema.dbml)[m
+[31m-and [database.png](docs/database.png). The PNG predates `preprocessing` and its source[m
+[31m-index; the DBML/SQL include them. Re-running `init-db` preserves data and adds the[m
+[31m-dataset-link/preprocessing columns and indexes to older databases.[m
+[32m+[m[32mand [database.png](docs/database.png). The PNG predates `preprocessing`, P3/P5 fields, and[m
+[32m+[m[32mthe source index; the DBML/SQL include them. Re-running `init-db` preserves data and adds the[m
+[32m+[m[32mdataset-link, preprocessing, P3/P5 columns and indexes to older databases.[m
+ [m
+ For the full batch/notebook environment, use Python 3.13+ and uv:[m
+ [m
+[1mdiff --git a/backend/db.py b/backend/db.py[m
+[1mindex 42773ca..bf5b2e1 100644[m
+[1m--- a/backend/db.py[m
+[1m+++ b/backend/db.py[m
+[36m@@ -37,6 +37,12 @@[m [mdef serialize_guard_result(row):[m
+         "attack_type": row["attack_type"],[m
+         "reason": row["reason"],[m
+         "model_version": row["model_version"],[m
+[32m+[m[32m        "p3_similarity_score": row.get("p3_similarity_score"),[m
+[32m+[m[32m        "anomaly_score": row.get("anomaly_score"),[m
+[32m+[m[32m        "p5_status": row.get("p5_status"),[m
+[32m+[m[32m        "p5_feature_version": row.get("p5_feature_version"),[m
+[32m+[m[32m        "p5_processed_at": row["p5_processed_at"].isoformat() if row.get("p5_processed_at") else None,[m
+[32m+[m[32m        "p5_sequence": row.get("p5_sequence"),[m
+         "checked_at": row["checked_at"].isoformat() if row["checked_at"] else None,[m
+         "scored_at": row["scored_at"].isoformat() if row.get("scored_at") else None,[m
+     }[m
+[36m@@ -152,23 +158,74 @@[m [mdef save_guard_result([m
+ [m
+ [m
+ def save_guar

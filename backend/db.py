@@ -37,6 +37,12 @@ def serialize_guard_result(row):
         "attack_type": row["attack_type"],
         "reason": row["reason"],
         "model_version": row["model_version"],
+        "p3_similarity_score": row.get("p3_similarity_score"),
+        "anomaly_score": row.get("anomaly_score"),
+        "p5_status": row.get("p5_status"),
+        "p5_feature_version": row.get("p5_feature_version"),
+        "p5_processed_at": row["p5_processed_at"].isoformat() if row.get("p5_processed_at") else None,
+        "p5_sequence": row.get("p5_sequence"),
         "checked_at": row["checked_at"].isoformat() if row["checked_at"] else None,
         "scored_at": row["scored_at"].isoformat() if row.get("scored_at") else None,
     }
@@ -152,21 +158,72 @@ def save_guard_result(
 
 
 def save_guard_score(
-    database_url, prompt_id, malicious_score, attack_type, model_version, reason=None, checked_at=None
+    database_url, prompt_id, malicious_score, attack_type, model_version, reason=None, checked_at=None,
+    similarity_score=None,
 ):
     """Persist P4 output while leaving the final allow/block/review choice to P7."""
     with connect(database_url) as conn:
         row = conn.execute(
             """UPDATE guard_results
-               SET malicious_score = %s, attack_type = %s,
+               SET malicious_score = %s, attack_type = %s, p3_similarity_score = %s,
                    reason = CASE WHEN decision = 'pending' THEN %s ELSE reason END,
                    model_version = %s, scored_at = COALESCE(%s, NOW()),
                    checked_at = CASE WHEN decision = 'pending' THEN COALESCE(%s, NOW()) ELSE checked_at END
                WHERE prompt_id = %s
                RETURNING *""",
-            (malicious_score, attack_type, reason, model_version, checked_at, checked_at, prompt_id),
+            (malicious_score, attack_type, similarity_score, reason, model_version, checked_at, checked_at, prompt_id),
         ).fetchone()
     return serialize_guard_result(row) if row else None
+
+
+def get_p5_input(database_url, prompt_id):
+    """Read persisted P1/P3/P4 inputs and P5 idempotency state for one prompt."""
+    with connect(database_url) as conn:
+        return conn.execute(
+            """SELECT p.preprocessing, g.malicious_score, g.p3_similarity_score,
+                      g.anomaly_score, g.p5_status, g.p5_feature_version
+               FROM prompts p JOIN guard_results g ON g.prompt_id = p.id
+               WHERE p.id = %s""",
+            (prompt_id,),
+        ).fetchone()
+
+
+def get_p5_rebuild_rows(database_url, feature_version, window_size):
+    """Return the recent feature tail needed to rebuild P5 and the total trained count."""
+    with connect(database_url) as conn:
+        total = conn.execute(
+            """SELECT count(*) AS n FROM guard_results
+               WHERE p5_feature_version = %s AND p5_sequence IS NOT NULL""",
+            (feature_version,),
+        ).fetchone()["n"]
+        # HST carries two rolling windows. Include the current window's offset so a
+        # restart resumes with the same window phase.
+        limit = min(total, 2 * window_size + (total % window_size))
+        rows = conn.execute(
+            """SELECT p.preprocessing, g.malicious_score, g.p3_similarity_score
+               FROM guard_results g JOIN prompts p ON p.id = g.prompt_id
+               WHERE g.p5_feature_version = %s AND g.p5_sequence IS NOT NULL
+               ORDER BY g.p5_sequence DESC
+               LIMIT %s""",
+            (feature_version, limit),
+        ).fetchall()
+    rows.reverse()
+    return {"sample_count": total, "rows": rows}
+
+
+def save_p5_result(database_url, prompt_id, anomaly_score, status, feature_version):
+    """Save P5 once; return False when this prompt already has this feature version."""
+    with connect(database_url) as conn:
+        row = conn.execute(
+            """UPDATE guard_results
+               SET anomaly_score = %s, p5_status = %s, p5_feature_version = %s,
+                   p5_processed_at = NOW(), p5_sequence = nextval('p5_event_sequence')
+               WHERE prompt_id = %s
+                 AND p5_feature_version IS DISTINCT FROM %s
+               RETURNING prompt_id""",
+            (anomaly_score, status, feature_version, prompt_id, feature_version),
+        ).fetchone()
+    return row is not None
 
 
 def route_guard_result(database_url, prompt_id, decision, reason):

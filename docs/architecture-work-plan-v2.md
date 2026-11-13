@@ -9,11 +9,11 @@ Docker Compose runs the services together: Kafka carries incoming prompts, Pytho
 
 ### Implemented intake milestone
 
-The current path is **browser → Flask → `prompts_raw` → one Python consumer (P1–P4) → PostgreSQL**.
+The current path is **browser → Flask → `prompts_raw` → one Python consumer (P1–P5) → PostgreSQL**.
 Docker Compose starts Flask, the intake and burst workers, Kafka and PostgreSQL; a one-shot initialization
-service creates the tables and topics. The consumer is the entry point for future guard stages.
+service creates the tables and topics. The consumer runs intake, scoring, and P5 anomaly detection.
 It saves original prompts, P1/P2 preprocessing, and a `pending` decision atomically;
-it then runs P3/P4 before committing the Kafka offset, leaving final routing to P7.
+it then runs P3/P4 and P5 before committing the Kafka offset, leaving final routing to P7.
 P1 derives an NFC/whitespace-cleaned copy
 and original-text character/word/symbol features. P2 supplies per-source allow,
 block, and review counts from the last ten minutes of checked decisions, with a
@@ -48,7 +48,7 @@ a stored decision. Invalid events are logged with topic/partition/offset and ski
 storage or offset failures stop the consumer for Compose to restart. See the [README](../README.md)
 for commands and the [database sketch](database-schema.dbml) for the current schema.
 The database PNG predates the preprocessing column and source index; DBML/SQL
-describe the current schema. P1–P4, P7/P8, and P9/P10 are implemented; P5/P6 remain planned.
+describe the current schema. P1–P5, P7/P8, and P9/P10 are implemented; P6 remains planned.
 
 ### Implemented P3–P4: similarity and classification
 
@@ -60,12 +60,23 @@ with online memory as a project extension. It does not alter the binary probabil
 Batch 3 runs for probability >= 0.5; lower scores have no attack type. Inference matches the saved
 256-token truncation; original text is preserved and truncation is reported explicitly.
 
-P4 calls `save_guard_score` for successful and failed inference, then intake commits Kafka.
-Only required classification fields are persisted; similarity/timing details stay in the returned
-result and logs. `scored_at` preserves P4 completion after P7 replaces `checked_at` with routing time.
-P6 can use these fields or the returned result later; no new Kafka topics or metrics tables are added.
+P4 calls `save_guard_score` for successful and failed inference, persisting the classifier output,
+P3 similarity for P5, and completion time before the intake consumer proceeds. Timing details stay
+in the returned result and logs. `scored_at` preserves P4 completion after P7 replaces `checked_at`
+with routing time. P6 can use these fields or the returned result later; no new Kafka topics or
+metric tables are added.
 Startup loads and warms models/references before polling. Wait for the scorer-ready log; cold-start
 traffic or backlog can exceed the unchanged P7 deadline. Final review/block decisions are never reopened.
+
+### Implemented P5: streaming anomaly detection
+
+The intake consumer scores P1 text statistics plus available P3 similarity and P4 malicious-score
+signals with River Half-Space Trees. Features are normalized to `[0, 1]`, with availability flags
+for missing classifier signals. P5 uses 10 trees, height 8, a 250-observation window, and a fixed
+seed. It scores before learning; the first window is marked as warm-up. P5 stores scores and input
+version in `guard_results`, assigns each learned event a database sequence to suppress duplicate
+training and preserve order, and rebuilds its recent window from PostgreSQL at startup. P5 is
+advisory and does not alter P7 routing.
 
 ### Implemented P9–P10: burst detection and rate limiting
 

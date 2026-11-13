@@ -201,6 +201,7 @@ def score_and_store(database_url, event, scorer):
         database_url, result.prompt_id, result.malicious_score, result.attack_type,
         result.model_version, reason="classifier_inference_failed" if result.outcome == "failed" else None,
         checked_at=result.scored_at,
+        similarity_score=result.similarity.score if result.similarity is not None else None,
     )
     if saved is None:
         raise RuntimeError("P4 prompt row disappeared before score persistence.")

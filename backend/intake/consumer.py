@@ -20,7 +20,8 @@ LOGGER = logging.getLogger(__name__)
 GROUP_ID = "pijd-intake-v1"
 
 
-def process_message(consumer, message, database_url, source_context_cache=None, scorer=None):
+def process_message(consumer, message, database_url, source_context_cache=None, scorer=None,
+                    anomaly_detector=None):
     """Finish storage before committing; permanent bad records are logged and skipped."""
     location = f"{message.topic()}:{message.partition()}:{message.offset()}"
     try:
@@ -41,6 +42,9 @@ def process_message(consumer, message, database_url, source_context_cache=None, 
             # Import lazily so intake fixtures need neither model artifacts nor downloads.
             from backend.stream.scoring import score_and_store
             score_and_store(database_url, event, scorer)
+        if anomaly_detector is not None:
+            from backend.stream.anomaly import score_and_store as score_anomaly_and_store
+            score_anomaly_and_store(database_url, event["prompt_id"], anomaly_detector)
     # Operational database failures and commit failures propagate. Never poll a later record after them.
     consumer.commit(message=message, asynchronous=False)
 
@@ -55,6 +59,12 @@ def main():
     except Exception as error:
         # Startup errors are configuration/artifact failures, not per-prompt outcomes.
         LOGGER.error("P3/P4 startup failed (%s): %s", type(error).__name__, error)
+        raise SystemExit(1) from None
+    try:
+        from backend.stream.anomaly import PromptAnomalyDetector
+        anomaly_detector = PromptAnomalyDetector.load(database_url)
+    except Exception as error:
+        LOGGER.error("P5 startup failed (%s): %s", type(error).__name__, error)
         raise SystemExit(1) from None
     consumer = Consumer({
         "bootstrap.servers": bootstrap_servers(),
@@ -81,7 +91,7 @@ def main():
                 continue
             if message.error():
                 raise KafkaException(message.error())
-            process_message(consumer, message, database_url, source_context_cache, scorer)
+            process_message(consumer, message, database_url, source_context_cache, scorer, anomaly_detector)
     except (psycopg.Error, KafkaException) as error:
         LOGGER.error("Consumer stopped without advancing further: %s", type(error).__name__)
         raise SystemExit(1) from None
