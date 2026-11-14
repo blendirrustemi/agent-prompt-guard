@@ -96,6 +96,17 @@ ALTER TABLE prompts ADD COLUMN IF NOT EXISTS preprocessing JSONB;
 
 -- P4 completion survives P7 replacing checked_at with the final routing time.
 ALTER TABLE guard_results ADD COLUMN IF NOT EXISTS scored_at TIMESTAMPTZ;
+-- P3 similarity is retained so P5 can recover idempotently after a restart.
+ALTER TABLE guard_results ADD COLUMN IF NOT EXISTS p3_similarity_score DOUBLE PRECISION
+    CHECK (p3_similarity_score BETWEEN -1 AND 1);
+-- P5 anomaly output and feature version support at-least-once Kafka delivery and rebuilds.
+CREATE SEQUENCE IF NOT EXISTS p5_event_sequence;
+ALTER TABLE guard_results ADD COLUMN IF NOT EXISTS anomaly_score DOUBLE PRECISION
+    CHECK (anomaly_score >= 0);
+ALTER TABLE guard_results ADD COLUMN IF NOT EXISTS p5_status TEXT;
+ALTER TABLE guard_results ADD COLUMN IF NOT EXISTS p5_feature_version TEXT;
+ALTER TABLE guard_results ADD COLUMN IF NOT EXISTS p5_processed_at TIMESTAMPTZ;
+ALTER TABLE guard_results ADD COLUMN IF NOT EXISTS p5_sequence BIGINT;
 
 CREATE INDEX IF NOT EXISTS prompts_created_at_idx ON prompts (created_at DESC);
 CREATE INDEX IF NOT EXISTS throttle_decisions_source_time_idx ON throttle_decisions (source, event_time DESC);
@@ -106,3 +117,5 @@ CREATE INDEX IF NOT EXISTS attack_aggregate_history_snapshot_idx ON attack_aggre
 CREATE INDEX IF NOT EXISTS prompts_dataset_prompt_id_idx ON prompts (dataset_prompt_id);
 CREATE INDEX IF NOT EXISTS prompts_source_idx ON prompts (source);
 CREATE INDEX IF NOT EXISTS dataset_prompts_source_split_idx ON dataset_prompts (source_dataset, split);
+CREATE INDEX IF NOT EXISTS guard_results_p5_rebuild_idx
+    ON guard_results (p5_feature_version, p5_sequence DESC) WHERE p5_sequence IS NOT NULL;

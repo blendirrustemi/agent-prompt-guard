@@ -28,6 +28,12 @@ Table guard_results {
   attack_type text
   reason text
   model_version text
+  p3_similarity_score "double precision" [note: 'P3 cosine similarity in [-1, 1]; retained for P5 retry/rebuild']
+  anomaly_score "double precision" [note: 'P5 Half-Space Trees score; null during warm-up']
+  p5_status text [note: "'warming_up' or 'scored'"]
+  p5_feature_version text [note: 'P5 input contract used for idempotency and state rebuild']
+  p5_processed_at timestamptz [note: 'P5 feature update completion time']
+  p5_sequence bigint [note: 'Database sequence preserving P5 learning order for restart recovery']
   checked_at timestamptz [note: 'P4 score completion time while pending; P7 final decision time afterward']
   scored_at timestamptz [note: 'P4 completion time, including failed inference; preserved by P7 routing']
 }
