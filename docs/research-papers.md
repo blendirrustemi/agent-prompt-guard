@@ -24,3 +24,14 @@ This paper investigates the use of pretrained text embeddings and machine learni
 **Reason for including:**
 
 Applies sentence embeddings (including all-MiniLM-L6-v2) with Logistic Regression, XGBoost and Random Forest to prompt-injection detection. Random Forest outperformed Logistic Regression on MiniLM embeddings. Covers direct prompt injection only.
+
+## 3. PromptGuard: A Structured Framework for Injection-Resilient Language Models (2026)
+
+**Paper**: https://doi.org/10.1038/s41598-025-31086-y 
+
+**Relevant project components**: 
+- Pipeline 3: Stateful Similarity Probing
+
+**Reason for including:**
+
+This paper looks into a multi-layered framework focused on detecting and preventing prompt injection attacks. It discusses using semantic encoders, such as MiniLM, to convert the incoming promts into embeddings and comparing them with known malicious prompt embeddings using cosine similarity.
