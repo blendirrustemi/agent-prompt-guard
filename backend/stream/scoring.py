@@ -1,4 +1,5 @@
-"""P3/P4 inference and durable score handoff to P7; no final decisions or topics."""
+"""P3/P4 inference and score output that is sent to P7; no final decisions or topics.
+Purpose is to apply the trained models to incoming prompts: Batch 2 outputs a maliciousness probability, and Batch 3 supplies an attack type when appropriate."""
 
 import hashlib
 import json
@@ -24,7 +25,7 @@ MODEL_DIR = Path(__file__).resolve().parents[1] / "batch" / "models"
 
 @dataclass(frozen=True)
 class ScoringResult:
-    """P4 handoff for future P6; embeddings and prompt content are not exported."""
+    """Hold the scores, timing and status for one prompt."""
     prompt_id: str
     outcome: str
     malicious_score: float | None
@@ -38,12 +39,14 @@ class ScoringResult:
     error_type: str | None = None
 
     def as_dict(self):
+        """Convert the result to a dictionary with a readable timestamp."""
         result = asdict(self)
         result["scored_at"] = self.scored_at.isoformat()
         return result
 
 
 def _number_setting(name, default, *, integer=False):
+    """Read a positive number from an environment setting."""
     value = int(os.getenv(name, default)) if integer else float(os.getenv(name, default))
     if not np.isfinite(value) or value <= 0:
         raise ValueError(f"{name} must be finite and positive.")
@@ -51,6 +54,7 @@ def _number_setting(name, default, *, integer=False):
 
 
 def _read_artifacts(model_dir):
+    """Load and check the saved Batch 2/3 models and identify their version."""
     configs, classifiers = {}, {}
     fingerprint = hashlib.sha256()
     for name in ("batch2", "batch3"):
@@ -92,8 +96,11 @@ def _read_artifacts(model_dir):
 
 
 class PromptScorer:
+    """Keep models and similarity references ready to score incoming prompts."""
+
     def __init__(self, encoder, binary, attack, probe, model_version, *, recent_min_score=0.90,
                  now=None, timer=perf_counter):
+        """Store the loaded components and settings for reuse."""
         if not np.isfinite(recent_min_score) or not 0 <= recent_min_score <= 1:
             raise ValueError("P3 recent-reference score must be between 0 and 1.")
         self.encoder, self.binary, self.attack = encoder, binary, attack
@@ -105,6 +112,7 @@ class PromptScorer:
 
     @classmethod
     def load(cls, database_url, *, model_dir=MODEL_DIR):
+        """Prepare the models and attack references, then check they work."""
         config, binary, attack, model_version = _read_artifacts(Path(model_dir))
         from sentence_transformers import SentenceTransformer
 
@@ -147,7 +155,7 @@ class PromptScorer:
         return scorer
 
     def score(self, prompt_id, text):
-        """Return the public result plus a private embedding for post-commit memory."""
+        """Compare and classify one prompt, returning its results and embedding."""
         started = self.timer()
         token_count = None
         truncated = None
@@ -189,14 +197,14 @@ class PromptScorer:
 
 
 def score_and_store(database_url, event, scorer):
-    """Persist before remembering/acknowledging; retries preserve completed P4 outcomes."""
+    """Skip completed prompts; otherwise save scores and remember high-confidence detections."""
     stored = db.get_guard_result(database_url, event["prompt_id"])
     if stored is None:
         raise RuntimeError("P4 prompt row is missing after intake storage.")
     if stored["malicious_score"] is not None or stored.get("scored_at") is not None:
         return None
     result, embedding = scorer.score(event["prompt_id"], event["text"])
-    # Keep database exceptions outside the inference handler: never acknowledge a failed write.
+
     saved = db.save_guard_score(
         database_url, result.prompt_id, result.malicious_score, result.attack_type,
         result.model_version, reason="classifier_inference_failed" if result.outcome == "failed" else None,
