@@ -119,3 +119,5 @@ CREATE INDEX IF NOT EXISTS prompts_source_idx ON prompts (source);
 CREATE INDEX IF NOT EXISTS dataset_prompts_source_split_idx ON dataset_prompts (source_dataset, split);
 CREATE INDEX IF NOT EXISTS guard_results_p5_rebuild_idx
     ON guard_results (p5_feature_version, p5_sequence DESC) WHERE p5_sequence IS NOT NULL;
+CREATE INDEX IF NOT EXISTS guard_results_p6_scores_idx
+    ON guard_results (scored_at, prompt_id) WHERE malicious_score IS NOT NULL;

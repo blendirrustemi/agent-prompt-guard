@@ -101,6 +101,21 @@ services:
     restart: unless-stopped
     stop_grace_period: 20s
 
+  # P6 monitors stored P4 malicious probabilities and logs retraining alerts on drift.
+  drift:
+    <<: *python
+    command: ["python", "-m", "backend.stream.drift_worker"]
+    environment:
+      DATABASE_URL: postgresql://pijd:pijd@db:5432/pijd
+      P6_POLL_SECONDS: ${P6_POLL_SECONDS:-1}
+      P6_BATCH_SIZE: ${P6_BATCH_SIZE:-500}
+      P6_ADWIN_DELTA: ${P6_ADWIN_DELTA:-0.002}
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    stop_grace_period: 20s
+
   db:
     image: postgres:16
     environment:
