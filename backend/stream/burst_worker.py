@@ -17,6 +17,7 @@ from confluent_kafka import Consumer, KafkaException
 from dotenv import load_dotenv
 
 from backend import db
+from backend.readiness import mark_ready
 from backend.intake.events import validate_raw_event
 from backend.intake.producer import create_producer, flush_or_raise, publish_event
 from backend.intake.topics import PROMPTS_RAW, THROTTLE_DECISIONS, bootstrap_servers
@@ -84,6 +85,7 @@ def process_message(consumer, producer, message, database_url, detector, limiter
 
 
 def main():
+    mark_ready("burst", False)
     load_dotenv(Path(__file__).resolve().parents[2] / ".env")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     database_url = os.getenv("DATABASE_URL", "postgresql://localhost:5432/pijd")
@@ -113,7 +115,7 @@ def main():
         for source, blocked_until in db.get_active_source_blocks(database_url, datetime.now(timezone.utc)).items():
             limiter.restore(source, blocked_until)
             LOGGER.info("Restored block for source %s until %s", source, blocked_until.isoformat())
-        consumer.subscribe([PROMPTS_RAW])
+        consumer.subscribe([PROMPTS_RAW], on_assign=lambda client, partitions: mark_ready("burst"))
         LOGGER.info(
             "Consuming %s as %s (window %ds, threshold %d, cooldown %ds)",
             PROMPTS_RAW, GROUP_ID, detector.window_seconds, detector.threshold, limiter.cooldown_seconds,
@@ -129,6 +131,7 @@ def main():
         LOGGER.error("Burst worker stopped without advancing further: %s", type(error).__name__)
         raise SystemExit(1) from None
     finally:
+        mark_ready("burst", False)
         consumer.close()
 
 

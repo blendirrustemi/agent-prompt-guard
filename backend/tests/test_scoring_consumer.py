@@ -74,7 +74,8 @@ class ScoringConsumerTests(unittest.TestCase):
             args, kwargs = self.save.call_args
             row = {"prompt_id": args[1], "malicious_score": args[2], "attack_type": args[3],
                    "model_version": args[4], "checked_at": kwargs["checked_at"],
-                   "decided_at": NOW, "throttle_action": "allow"}
+                   "decided_at": NOW, "throttle_action": "allow",
+                   "scoring_metadata": kwargs["scoring_metadata"]}
             with patch("backend.stream.router_worker.db.get_pending_routes", return_value=[row]), \
                  patch("backend.stream.router_worker.db.route_guard_result", return_value=True) as route:
                 route_ready_prompts("unused", allow_max=0.3, block_min=0.7, score_timeout_seconds=30, now=NOW)

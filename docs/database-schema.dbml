@@ -13,6 +13,7 @@ Table prompts {
   created_at timestamptz [not null, default: `now()`]
   dataset_prompt_id uuid [ref: > dataset_prompts.id, note: 'ON DELETE SET NULL; NULL for web prompts, set for replayed dataset rows']
   preprocessing jsonb [note: 'Nullable P1/P2 snapshot: cleaned_text, original-text features, source_context; preserve first snapshot on redelivery']
+  stored_at timestamptz [not null, default: `now()`, note: 'Server-side initial storage time; P10 missing-output timeout origin']
 
   indexes {
     created_at [name: 'prompts_created_at_idx', note: 'DESC; used to list the newest prompts']
@@ -36,18 +37,23 @@ Table guard_results {
   p5_sequence bigint [note: 'Database sequence preserving P5 learning order for restart recovery']
   checked_at timestamptz [note: 'P4 score completion time while pending; P7 final decision time afterward']
   scored_at timestamptz [note: 'P4 completion time, including failed inference; preserved by P7 routing']
+  scoring_metadata jsonb [note: 'P4 outcome, token count, input coverage and per-stage timings']
 }
 
 // One row per prompt the agent worker handled.
 Table agent_runs {
   prompt_id uuid [pk, ref: - prompts.id, note: 'ON DELETE CASCADE; at most one run per prompt']
-  status text [not null, note: "One of 'completed', 'failed', 'rejected' (stored decision was not 'allow')"]
+  status text [not null, note: "One of 'running', 'completed', 'failed', 'rejected' (stored decision was not 'allow')"]
   response text [note: "The agent's answer"]
   tool_calls jsonb [not null, default: `'[]'::jsonb`, note: 'List of {name, args}']
   latency_ms integer
   model text [note: 'Ollama model used']
   error text [note: 'Why the run failed or was rejected']
   created_at timestamptz [not null, default: `now()`]
+  run_token uuid [note: 'Private execution claim; not returned by HTTP']
+  started_at timestamptz
+  finished_at timestamptz
+  deadline_at timestamptz [note: 'Interrupted running claims expire without automatically repeating execution']
 }
 
 // P10 rate-limiter output: one row per prompt seen by the burst worker; also published to throttle_decisions for P7.

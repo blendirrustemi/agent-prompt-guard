@@ -53,11 +53,11 @@ class IntakeRouteTests(unittest.TestCase):
 
     def test_individual_status_handles_missing_stored_and_unavailable_database(self):
         url = f"/api/prompts/{uuid4()}"
-        with patch("backend.db.get_prompt", return_value=None):
+        with patch("backend.db.get_prompt_result", return_value=None):
             self.assertEqual(self.client.get(url).status_code, 404)
-        with patch("backend.db.get_prompt", return_value={"decision": "pending"}):
+        with patch("backend.db.get_prompt_result", return_value={"status": "stored", "state": "checking"}):
             self.assertEqual(self.client.get(url).json["status"], "stored")
-        with patch("backend.db.get_prompt", side_effect=psycopg.OperationalError("unavailable")):
+        with patch("backend.db.get_prompt_result", side_effect=psycopg.OperationalError("unavailable")):
             self.assertEqual(self.client.get(url).status_code, 503)
 
 

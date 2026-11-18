@@ -9,7 +9,7 @@
 | `backend/` | Flask routes (`app.py`), database helpers (`db.py`), tables (`schema.sql`), dependencies, and Docker configuration. |
 | `backend/scripts/` | Database/topic setup and Compose initialization. |
 | `backend/intake/` | Version-two raw events, publishers, topic names, dataset replay CLI, and the intake consumer. |
-| `backend/stream/` | P1/P2 preprocessing; P3 similarity, P4 Batch 2/3 scoring, P5 Half-Space Trees; P7 routing; P8 aggregation; P9/P10 throttling. |
+| `backend/stream/` | P1/P2 preprocessing; P3 similarity, P4 Batch 2/3 scoring, P5 Half-Space Trees; P6 score drift; P7 routing; P8 aggregation; P9/P10 throttling. |
 | `backend/agent/` | LangChain/Ollama agent, two tools, allowed-prompt worker, and temporary guard stub. |
 | `backend/batch/` | Dataset imports and exploratory notebooks, with separate dependencies. |
 | `backend/tests/` | Route, storage, Kafka, agent, and local dataset fixture checks. |
@@ -26,7 +26,9 @@ see [README](../README.md). Keep `.env` local and preserve `tmp/postgres-dev/` a
 
 Separately, **`prompts_allowed` → agent worker → `agent_runs`** answers prompts with a
 stored `allow` decision. P7 supplies these decisions; the temporary stub is only for
-isolated demos. The default Compose stack does not start the agent.
+isolated demos. Compose starts the agent and waits for worker readiness before serving Flask.
+The browser polls through the guard/agent lifecycle and displays answers or hold/failure explanations.
+`python3 -m backend.ask` provides the same guarded flow from the terminal.
 
 In parallel, **`prompts_raw` → burst worker (P9/P10) → `throttle_decisions` → P7 router** applies
 immediate source blocks and score-based routing. P8 periodically reads stored P4 results and
@@ -38,7 +40,7 @@ Add dashboards for the stored P7/P8 results as a later step:
 
 | Folder | Responsibility |
 |---|---|
-| `backend/stream/` (remaining stages) | P6 drift monitoring; P4 exposes results and a durable completion timestamp for P6. |
+| `backend/stream/` | Runtime guard stages; P6 currently logs drift alerts. Durable alert/retraining orchestration remains follow-up work. |
 | `backend/dashboard/` | Streamlit graphs and human review pages. |
 
 Replay imported rows with `python -m backend.intake.replay`; select dataset/split,
@@ -46,7 +48,7 @@ rate, sources, and optional label/attack-group filters. It uses the browser's sa
 Kafka event and P1–P4 path. Wait for the consumer's scorer-ready log after model/reference warm-up;
 the MiniLM download cache is kept in a Compose volume. See the README for configuration and truncation limits.
 
-Extend the existing consumer with later guard stages, connect the allowed-prompt publisher, and add dashboards. Keep the
+Add human-label storage and feedback orchestration around the existing CSV retrainer, and add dashboards. Keep the
 version-two event contract and shared topic names consistent. Runtime packages belong in
 `backend/requirements.txt`; batch/notebook packages belong in `backend/batch/pyproject.toml`.
 Update the README when run commands change.

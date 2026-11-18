@@ -1,33 +1,37 @@
 # PIJD: Prompt Guard
 
-Current path: **browser → Flask → Kafka → intake consumer (P1–P5) → PostgreSQL**, with separate P7/P8 and P9/P10 workers.
+Current runtime: **HTTP input → Kafka → guard checks → P7 routing → allowed prompts → agent → stored answer**, exposed through the HTTP API and CLI.
 Dataset replay feeds the same Kafka/consumer path.
-The browser shows **Queued** after Kafka accepts a prompt, then **Pending check**
-after the consumer saves its original text and preprocessing snapshot. P4 scores with Batch 2, and P7 combines that score with P10 throttling. A separate agent worker
-and temporary guard stub are available for the allowed-prompt demo (see [Agent](#agent)).
+The browser shows **Queued**, **Checking**, and then the guard verdict. P4 scores with Batch 2,
+and P7 combines that score with P10 throttling. Allowed prompts reach the Compose agent worker
+automatically; the browser waits for and displays its answer. Block/review outcomes explain why
+the prompt was held. Dashboards remain future work.
 
 See the [folder guide](docs/folder-guide.md), [current architecture](docs/architecture-work-plan-v2.md),
 and [database sketch](docs/database-schema.dbml).
 
 ## Start the complete local stack
 
-With Docker running, from the project root:
+With Docker and Ollama running, pull a tool-capable model and set `OLLAMA_MODEL` in `.env`
+(Compose defaults to `qwen3:1.7b`). An already installed model can be selected instead.
+Create `.env` from `.env.example` if needed, then run from the project root.
+The explicit `--env-file .env` loads the root configuration, including your Ollama model:
 
 ```sh
-docker compose -f backend/compose.yaml up --build -d --wait
+docker compose --env-file .env -f backend/compose.yaml up --build -d --wait
 ```
 
 Open <http://127.0.0.1:5050>. This starts Flask, the intake consumer, P7 router, P8 aggregation worker, P9/P10
-burst worker, Kafka 3.9.1 in KRaft mode, and PostgreSQL 16. A one-shot initialization
+burst worker, P6 drift monitor, agent worker, Kafka 3.9.1 in KRaft mode, and PostgreSQL 16. A one-shot initialization
 service creates the tables and four topics before Flask and the workers start. Re-running startup
 preserves existing records and messages.
 
 The shared image now includes CPU inference dependencies matching the saved Batch 2/3 artifacts and River for P5,
 so its first build is larger. The consumer downloads MiniLM into the persistent `model_cache`
 volume, embeds available malicious NeurAlchemy training references, and warms inference before
-subscribing to Kafka. Wait for **`P3/P4 scorer ready`** and **`P5 detector ready`** in its logs before submitting demo prompts.
-`--wait` alone does not establish scorer readiness. Cold starts/backlogs can exceed P7's unchanged
-30-second deadline and enter review; late scores never automatically release finalized prompts.
+subscribing to Kafka. Startup health checks wait for scorer/P5 warm-up and Kafka group assignment;
+the agent also checks that Ollama has the configured model. Flask starts after the runtime workers are healthy.
+Backlogs can still exceed P7's 30-second deadline and enter review; late scores never automatically release finalized prompts.
 Missing or incompatible artifacts stop the consumer with an error.
 
 Ports 5050, 55432, and 9094 must be free. If this project's standalone PostgreSQL
@@ -45,7 +49,7 @@ host-side settings in `.env`. The image excludes local environment files.
 Stop the stack while preserving data:
 
 ```sh
-docker compose -f backend/compose.yaml stop
+docker compose --env-file .env -f backend/compose.yaml stop
 ```
 
 Do not use `down -v` when you want to keep database records and Kafka messages.
@@ -81,16 +85,51 @@ browser preserves the input and retry ID, including when the acknowledgement is 
 - Database read outages return 503. The browser continues showing Queued and retries
   its storage check every two seconds until confirmation.
 
-Refresh clears the visible chat without deleting records. Browser submissions run the classifier;
-the optional agent worker must be started separately to answer allowed prompts. The UI stops polling once storage is
-confirmed. There are no accounts or separate conversation histories.
+Refresh clears the visible chat without deleting records. The browser keeps polling through
+checking, waiting and answering, then displays the stored agent response under its prompt. It stops
+at completed, blocked, review or agent-failed outcomes. Temporary read failures preserve the last
+status and retry without another submission. Replies are rendered as literal text. There are no
+accounts or separate conversation histories; each prompt is an independent agent run.
+
+### Command-line prompt to answer
+
+Use the standard-library HTTP client from the project root (or omit the text to type it interactively):
+
+```sh
+python3 -m backend.ask "Which datasets are used in this university project?"
+```
+
+This uses the same `POST /api/prompts` path as the browser and polls the result until it reaches a
+terminal state. It never bypasses the guard. Progress and the prompt ID go to stderr; the answer
+goes to stdout. The saved classifier can flag benign requests too; this client reports the real
+verdict rather than bypassing it. Exit status is 0 for an answer, 2 for block/review, and 1 for an execution/client error.
+Use `--json` for the complete result, `--url` to select Flask, and `--timeout` to change the default
+180-second polling limit. To continue waiting without another submission:
+
+```sh
+python3 -m backend.ask --resume PROMPT_UUID --json
+```
+
+An uncertain POST prints its UUID; retry the same text with `--prompt-id UUID`. Editing the text
+requires a new ID. A CLI polling timeout does not cancel the stored prompt or repeat agent execution.
+
+`GET /api/prompts/<uuid>` keeps its existing `status: "stored"` and `prompt` fields and adds:
+
+- `state`: `checking`, `agent_queued`, `agent_running`, `completed`, `blocked`, `review`, or `agent_failed`.
+- `guard`: verdict, reason, scores, model version and scoring metadata (token coverage/timings).
+- `intake`: source, storage timestamp and P1/P2 snapshot.
+- `throttle`: the stored P10 decision, or null until available.
+- `agent`: execution status, response, tool calls and timing, or null before execution.
+
+Only `completed`, `blocked`, `review` and `agent_failed` are terminal. HTTP 404 means intake
+has not stored the acknowledged prompt yet; transient database read failures remain HTTP 503.
 
 ## Kafka events and the consumer
 
 | Topic | Current use |
 |---|---|
 | `prompts_raw` | Raw inputs consumed by the intake worker |
-| `prompts_allowed` | Allowed-prompt publisher from P7 (or temporary guard stub) and optional agent worker |
+| `prompts_allowed` | Allowed-prompt publisher from P7 and the Compose agent worker |
 | `prompts_labels` | Reserved for reviewed/evaluation labels |
 | `throttle_decisions` | P10 rate-limiter decision per raw prompt, consumed by P7 (see [Decision routing and attack aggregation](#decision-routing-and-attack-aggregation-p7p8)) |
 
@@ -160,31 +199,32 @@ HTTP responses and raw Kafka events keep their existing shapes.
 Inspect saved preprocessing:
 
 ```sh
-docker compose -f backend/compose.yaml exec db psql -U pijd -d pijd -c "SELECT id, preprocessing FROM prompts ORDER BY created_at DESC LIMIT 5;"
+docker compose --env-file .env -f backend/compose.yaml exec db psql -U pijd -d pijd -c "SELECT id, preprocessing FROM prompts ORDER BY created_at DESC LIMIT 5;"
 ```
 
 Inspect startup, processing, and consumer lag:
 
 ```sh
-docker compose -f backend/compose.yaml ps -a
-docker compose -f backend/compose.yaml logs --tail 50 init consumer web
-docker compose -f backend/compose.yaml exec kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server kafka:9092 --describe --group pijd-intake-v1
+docker compose --env-file .env -f backend/compose.yaml ps -a
+docker compose --env-file .env -f backend/compose.yaml logs --tail 50 init consumer web
+docker compose --env-file .env -f backend/compose.yaml exec kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server kafka:9092 --describe --group pijd-intake-v1
 ```
 
 To demonstrate queue recovery, stop the consumer, submit a prompt, then start it:
 
 ```sh
-docker compose -f backend/compose.yaml stop consumer
-docker compose -f backend/compose.yaml start consumer
+docker compose --env-file .env -f backend/compose.yaml stop consumer
+docker compose --env-file .env -f backend/compose.yaml start consumer
 ```
 
 ### P3 similarity and P4 classification
 
 The intake worker passes original text through one frozen `all-MiniLM-L6-v2` encoder and reuses
 the normalized 384-dimensional embedding for P3, Batch 2 binary inference, and Batch 3 attack typing.
-The original text is preserved. Inference deliberately matches batch evaluation's 256-token
-truncation: an adversarial tail beyond that limit is not checked. Token count/truncation and
-per-stage timing are returned and logged without prompt content or vectors.
+The original text is preserved. P4 counts tokens before encoding; inputs over the 256-token model
+window are held for review with `model_input_too_long` and are not classified from a partial prefix.
+The original prompt remains stored, but cannot reach the agent. Short-input inference retains batch
+parity. Token coverage and per-stage timings are saved in `guard_results.scoring_metadata`.
 
 P3 adapts the semantic intent/cosine comparison in
 [PromptGuard](https://www.nature.com/articles/s41598-025-31086-y); this is not the paper's complete
@@ -213,7 +253,7 @@ Late results can fill classifications for already blocked/reviewed prompts witho
 `ScoringResult.as_dict()` contains the in-process scoring result (identity, outcome, score, type,
 version, completion, token/truncation details, advisory similarity and timings). P6 reads the
 persisted malicious score from `guard_results`. P3 similarity is also saved there so P5 retries and
-restart recovery use the original value. Embeddings and timing details are not persisted.
+restart recovery use the original value. Embeddings are not persisted; timing metadata is.
 Already committed Kafka records are not automatically rescored; submit fresh prompts to test.
 
 ### P5 streaming anomaly detection
@@ -274,7 +314,8 @@ For the Compose deployment, rebuild and recreate it afterward so the updated mod
 files are copied into its image:
 
 ```sh
-docker compose -f backend/compose.yaml up -d --build consumer
+docker compose --env-file .env -f backend/compose.yaml build init
+docker compose --env-file .env -f backend/compose.yaml up -d --force-recreate --wait consumer
 ```
 
 A plain container restart would keep using the old model files baked into its image.
@@ -326,7 +367,10 @@ Compose runs two workers alongside intake and P9/P10:
   `block`. P10 `allow` joins the stored P4 `malicious_score`; prompts with no score remain pending
   while later throttle events continue. P7 allows scores at or below 0.30, blocks scores at or
   above 0.70, and sends the middle band to `review`. A missing score is sent to review after
-  30 seconds from the P10 decision. Only allowed prompts enter `prompts_allowed`.
+  30 seconds from the P10 decision. Failed inference and over-token inputs enter review as soon as
+  P10 permits routing. Missing P10 output enters review after 30 seconds from initial database storage,
+  using server-side `stored_at` rather than replay timestamps. Legacy pending scores with unknown
+  token coverage also enter review. Only allowed prompts enter `prompts_allowed`.
 - **P8 aggregation** refreshes a 60-second event-time window every 10 seconds. It counts P4's six
   attack types and records up to ten repeated normalized prompts per type (at least two occurrences).
   The current snapshot is in `attack_aggregate_current`; timestamped snapshots are in
@@ -353,18 +397,18 @@ python -m backend.stream.aggregation_worker
 Inspect routing and snapshots:
 
 ```sh
-docker compose -f backend/compose.yaml logs --tail 50 router aggregation
-docker compose -f backend/compose.yaml exec db psql -U pijd -d pijd -c "SELECT decision, count(*) FROM guard_results GROUP BY decision"
-docker compose -f backend/compose.yaml exec db psql -U pijd -d pijd -c "SELECT * FROM attack_aggregate_current"
-docker compose -f backend/compose.yaml exec db psql -U pijd -d pijd -c "SELECT snapshot_at, attack_type_counts, top_patterns FROM attack_aggregate_history ORDER BY snapshot_at DESC LIMIT 10"
+docker compose --env-file .env -f backend/compose.yaml logs --tail 50 router aggregation
+docker compose --env-file .env -f backend/compose.yaml exec db psql -U pijd -d pijd -c "SELECT decision, count(*) FROM guard_results GROUP BY decision"
+docker compose --env-file .env -f backend/compose.yaml exec db psql -U pijd -d pijd -c "SELECT * FROM attack_aggregate_current"
+docker compose --env-file .env -f backend/compose.yaml exec db psql -U pijd -d pijd -c "SELECT snapshot_at, attack_type_counts, top_patterns FROM attack_aggregate_history ORDER BY snapshot_at DESC LIMIT 10"
 ```
 
 Trigger a burst and inspect it (in PowerShell, pipe 12 lines the same way):
 
 ```sh
 seq 12 | sed 's/^/Burst prompt /' | python -m backend.intake.producer --source source_01
-docker compose -f backend/compose.yaml exec db psql -U pijd -d pijd -c "SELECT source, action, reason, window_count, burst_started FROM throttle_decisions ORDER BY event_time"
-docker compose -f backend/compose.yaml exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:9092 --topic throttle_decisions --from-beginning --timeout-ms 5000
+docker compose --env-file .env -f backend/compose.yaml exec db psql -U pijd -d pijd -c "SELECT source, action, reason, window_count, burst_started FROM throttle_decisions ORDER BY event_time"
+docker compose --env-file .env -f backend/compose.yaml exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:9092 --topic throttle_decisions --from-beginning --timeout-ms 5000
 ```
 
 ## Local Python and command-line publishing
@@ -375,7 +419,7 @@ For development outside the app containers:
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r backend/requirements.txt
-docker compose -f backend/compose.yaml up -d --wait db kafka
+docker compose --env-file .env -f backend/compose.yaml up -d --wait db kafka
 python -m backend.scripts.create_topics
 ```
 
@@ -420,7 +464,7 @@ python -m backend.intake.replay --dataset neuralchemy --split test --limit 100 -
 
 The same command can run inside the existing consumer container, using its internal
 database/Kafka addresses: replace `python` with
-`docker compose -f backend/compose.yaml exec consumer python`.
+`docker compose --env-file .env -f backend/compose.yaml exec consumer python`.
 
 | Option | Meaning |
 |---|---|
@@ -457,7 +501,7 @@ excluded from training.
 
 ## Agent
 
-The optional agent runs separately from the default intake/burst stack.
+Compose starts the agent automatically. It can also be run directly for local development.
 
 One LangChain agent with two deterministic tools, running a local model through [Ollama](https://ollama.com):
 
@@ -473,6 +517,8 @@ ollama pull qwen3:1.7b
 ```dotenv
 OLLAMA_BASE_URL=http://127.0.0.1:11434
 OLLAMA_MODEL=qwen3:1.7b
+OLLAMA_DOCKER_BASE_URL=http://host.docker.internal:11434
+AGENT_TIMEOUT_SECONDS=120
 ```
 
 Ask the agent directly; this needs neither Kafka nor the database:
@@ -483,7 +529,12 @@ python -m backend.agent.agent "What is 12 * 7?"
 
 ### Agent worker
 
-The worker reads `prompts_allowed` from Kafka. For each message it re-checks the decision stored in `guard_results`, runs the agent only if it is `allow`, and stores the outcome in `agent_runs`. It runs the text stored in `prompts`, so the agent answers exactly what the guard checked. Kafka offsets are committed after the row is stored, and a prompt that already has a stored run is skipped on redelivery.
+The worker validates `prompts_allowed` events, re-checks the stored guard decision and runs only
+allowed prompts, using the original stored text. It atomically claims a `running` row before model
+execution. A subprocess bounds the entire model/tool loop to `AGENT_TIMEOUT_SECONDS` (default 120).
+Completion/failure is saved before committing the Kafka offset, and claimed/completed prompts are
+not executed again on redelivery. Interrupted claims expire to failure after their deadline plus
+10 seconds; resubmit with a new prompt ID to retry. This avoids silently repeating uncertain tool calls.
 
 ```sh
 python -m flask --app backend.app init-db
@@ -513,13 +564,14 @@ Publish one from Python with `backend.intake.producer.publish_allowed_prompt(pro
 | Column | Meaning |
 |---|---|
 | `prompt_id` | The prompt (primary key, so at most one run per prompt) |
-| `status` | `completed`; `failed` (Ollama or the model errored, see `error`); `rejected` (the stored decision was not `allow`, the agent was not called) |
+| `status` | `running`; `completed`; `failed` (execution error, timeout or interrupted claim); `rejected` (the stored decision was not `allow`, the agent was not called) |
 | `response` | The agent's answer |
 | `tool_calls` | JSON list of `{"name", "args"}` for every tool the agent called |
 | `latency_ms` | How long the agent took |
 | `model` | The Ollama model used |
 | `error` | Why a run failed or was rejected |
 | `created_at` | When the run was stored |
+| `started_at`, `finished_at` | Execution lifecycle timestamps |
 
 ## Database and batch data
 
@@ -574,6 +626,11 @@ source the importer retained.
 
 ## Checks
 
+The complete-flow checks use real Kafka and PostgreSQL with injected deterministic model/agent
+fixtures. They exercise all routing outcomes, the outbox, duplicate execution prevention and the
+HTTP result lifecycle. Use a dedicated database and both test connection settings as below.
+Live scorer and Ollama checks remain explicitly enabled separately.
+
 Fast checks need only the runtime dependencies:
 
 ```sh
@@ -595,7 +652,7 @@ latencies. It does not invoke Ollama or modify dataset/model artifacts.
 Database and Kafka checks are opt-in. Create a dedicated test database once, then run:
 
 ```sh
-docker compose -f backend/compose.yaml exec db createdb -U pijd pijd_test
+docker compose --env-file .env -f backend/compose.yaml exec db createdb -U pijd pijd_test
 TEST_DATABASE_URL=postgresql://pijd:pijd@127.0.0.1:55432/pijd_test TEST_KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9094 python -m unittest discover -s backend/tests -v
 ```
 
@@ -619,5 +676,5 @@ If a host's Windows Application Control blocks the Kafka client DLL, run the run
 suite inside the existing Linux container instead:
 
 ```sh
-docker compose -f backend/compose.yaml exec -e TEST_DATABASE_URL=postgresql://pijd:pijd@db:5432/pijd_test -e TEST_KAFKA_BOOTSTRAP_SERVERS=kafka:9092 web python -m unittest discover -s backend/tests -v
+docker compose --env-file .env -f backend/compose.yaml exec -e TEST_DATABASE_URL=postgresql://pijd:pijd@db:5432/pijd_test -e TEST_KAFKA_BOOTSTRAP_SERVERS=kafka:9092 web python -m unittest discover -s backend/tests -v
 ```

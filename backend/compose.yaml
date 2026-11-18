@@ -28,6 +28,14 @@ services:
     depends_on:
       init:
         condition: service_completed_successfully
+      consumer:
+        condition: service_healthy
+      burst:
+        condition: service_healthy
+      router:
+        condition: service_healthy
+      agent:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5050/', timeout=2)"]
@@ -48,6 +56,12 @@ services:
       P3_RECENT_MIN_SCORE: ${P3_RECENT_MIN_SCORE:-0.90}
     volumes:
       - model_cache:/model-cache
+    healthcheck:
+      test: ["CMD", "python", "-c", "from pathlib import Path; assert Path('/tmp/pijd-consumer-ready').exists()"]
+      interval: 5s
+      timeout: 3s
+      start_period: 600s
+      retries: 12
     depends_on:
       init:
         condition: service_completed_successfully
@@ -64,6 +78,11 @@ services:
       BURST_WINDOW_SECONDS: ${BURST_WINDOW_SECONDS:-60}
       BURST_THRESHOLD: ${BURST_THRESHOLD:-10}
       BURST_COOLDOWN_SECONDS: ${BURST_COOLDOWN_SECONDS:-300}
+    healthcheck:
+      test: ["CMD", "python", "-c", "from pathlib import Path; assert Path('/tmp/pijd-burst-ready').exists()"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
     depends_on:
       init:
         condition: service_completed_successfully
@@ -80,11 +99,41 @@ services:
       P7_ALLOW_MAX_SCORE: ${P7_ALLOW_MAX_SCORE:-0.30}
       P7_BLOCK_MIN_SCORE: ${P7_BLOCK_MIN_SCORE:-0.70}
       P7_SCORE_TIMEOUT_SECONDS: ${P7_SCORE_TIMEOUT_SECONDS:-30}
+    healthcheck:
+      test: ["CMD", "python", "-c", "from pathlib import Path; assert Path('/tmp/pijd-router-ready').exists()"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      consumer:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 20s
+
+  agent:
+    <<: *python
+    command: ["python", "-m", "backend.agent.worker"]
+    environment:
+      DATABASE_URL: postgresql://pijd:pijd@db:5432/pijd
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      OLLAMA_BASE_URL: ${OLLAMA_DOCKER_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:1.7b}
+      AGENT_TIMEOUT_SECONDS: ${AGENT_TIMEOUT_SECONDS:-120}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "python", "-c", "from pathlib import Path; assert Path('/tmp/pijd-agent-ready').exists()"]
+      interval: 5s
+      timeout: 3s
+      start_period: 30s
+      retries: 12
     depends_on:
       init:
         condition: service_completed_successfully
     restart: unless-stopped
-    stop_grace_period: 20s
+    stop_grace_period: 140s
 
   # P8 attack-type and repeated-pattern rolling-window snapshots.
   aggregation:

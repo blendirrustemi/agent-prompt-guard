@@ -45,6 +45,7 @@ def serialize_guard_result(row):
         "p5_sequence": row.get("p5_sequence"),
         "checked_at": row["checked_at"].isoformat() if row["checked_at"] else None,
         "scored_at": row["scored_at"].isoformat() if row.get("scored_at") else None,
+        "scoring_metadata": row.get("scoring_metadata"),
     }
 
 
@@ -159,7 +160,7 @@ def save_guard_result(
 
 def save_guard_score(
     database_url, prompt_id, malicious_score, attack_type, model_version, reason=None, checked_at=None,
-    similarity_score=None,
+    similarity_score=None, scoring_metadata=None,
 ):
     """Persist P4 output while leaving the final allow/block/review choice to P7."""
     with connect(database_url) as conn:
@@ -167,11 +168,12 @@ def save_guard_score(
             """UPDATE guard_results
                SET malicious_score = %s, attack_type = %s, p3_similarity_score = %s,
                    reason = CASE WHEN decision = 'pending' THEN %s ELSE reason END,
-                   model_version = %s, scored_at = COALESCE(%s, NOW()),
+                   model_version = %s, scored_at = COALESCE(%s, NOW()), scoring_metadata = %s,
                    checked_at = CASE WHEN decision = 'pending' THEN COALESCE(%s, NOW()) ELSE checked_at END
                WHERE prompt_id = %s
                RETURNING *""",
-            (malicious_score, attack_type, similarity_score, reason, model_version, checked_at, checked_at, prompt_id),
+            (malicious_score, attack_type, similarity_score, reason, model_version, checked_at,
+             Jsonb(scoring_metadata) if scoring_metadata is not None else None, checked_at, prompt_id),
         ).fetchone()
     return serialize_guard_result(row) if row else None
 
@@ -268,15 +270,16 @@ def get_pending_routes(database_url, *, ready_before):
             """SELECT p.id AS prompt_id, p.text, t.action AS throttle_action,
                       t.reason AS throttle_reason, t.decided_at,
                       g.malicious_score, g.attack_type, g.model_version, g.reason,
-                      g.checked_at
-               FROM throttle_decisions t
-               JOIN guard_results g ON g.prompt_id = t.prompt_id
-               JOIN prompts p ON p.id = t.prompt_id
+                      g.checked_at, g.scored_at, g.scoring_metadata, p.stored_at
+               FROM prompts p
+               JOIN guard_results g ON g.prompt_id = p.id
+               LEFT JOIN throttle_decisions t ON t.prompt_id = p.id
                WHERE g.decision = 'pending'
                  AND (t.action = 'block' OR (t.action = 'allow'
-                   AND (g.malicious_score IS NOT NULL OR t.decided_at <= %s)))
-               ORDER BY t.decided_at, t.prompt_id""",
-            (ready_before,),
+                   AND (g.scored_at IS NOT NULL OR t.decided_at <= %s))
+                   OR (t.prompt_id IS NULL AND p.stored_at <= %s))
+               ORDER BY p.stored_at, p.id""",
+            (ready_before, ready_before),
         ).fetchall()
 
 
@@ -330,6 +333,8 @@ def serialize_agent_run(row):
         "model": row["model"],
         "error": row["error"],
         "created_at": row["created_at"].isoformat(),
+        "started_at": row["started_at"].isoformat() if row.get("started_at") else None,
+        "finished_at": row["finished_at"].isoformat() if row.get("finished_at") else None,
     }
 
 
@@ -352,6 +357,74 @@ def get_agent_run(database_url, prompt_id):
     with connect(database_url) as conn:
         row = conn.execute("SELECT * FROM agent_runs WHERE prompt_id = %s", (prompt_id,)).fetchone()
     return serialize_agent_run(row) if row else None
+
+
+def claim_agent_run(database_url, prompt_id, model, timeout_seconds):
+    """Atomically claim an allowed prompt before any model/tool execution."""
+    token = uuid4()
+    with connect(database_url) as conn:
+        row = conn.execute(
+            """INSERT INTO agent_runs (prompt_id, status, model, run_token, started_at, deadline_at)
+               SELECT prompt_id, 'running', %s, %s, NOW(), NOW() + %s * INTERVAL '1 second'
+               FROM guard_results WHERE prompt_id = %s AND decision = 'allow'
+               ON CONFLICT (prompt_id) DO NOTHING RETURNING run_token""",
+            (model, token, timeout_seconds + 10, prompt_id),
+        ).fetchone()
+    return str(row["run_token"]) if row else None
+
+
+def finish_agent_run(database_url, prompt_id, token, status, *, response=None,
+                     tool_calls=(), latency_ms=None, error=None):
+    with connect(database_url) as conn:
+        row = conn.execute(
+            """UPDATE agent_runs SET status = %s, response = %s, tool_calls = %s,
+                      latency_ms = %s, error = %s, finished_at = NOW()
+               WHERE prompt_id = %s AND status = 'running' AND run_token = %s RETURNING *""",
+            (status, response, Jsonb(list(tool_calls)), latency_ms, error, prompt_id, token),
+        ).fetchone()
+    return serialize_agent_run(row) if row else None
+
+
+def expire_agent_runs(database_url):
+    """Do not repeat an interrupted invocation whose tool effects may already have occurred."""
+    with connect(database_url) as conn:
+        result = conn.execute(
+            """UPDATE agent_runs SET status = 'failed', finished_at = NOW(),
+                      error = 'Agent execution was interrupted or exceeded its deadline; resubmit to retry.'
+               WHERE status = 'running' AND deadline_at <= NOW()"""
+        )
+    return result.rowcount
+
+
+def get_prompt_result(database_url, prompt_id):
+    """Read a consistent prompt/guard/agent snapshot for API polling."""
+    with connect(database_url) as conn:
+        conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        prompt = conn.execute("SELECT * FROM prompts WHERE id = %s", (prompt_id,)).fetchone()
+        if prompt is None:
+            return None
+        guard = serialize_guard_result(conn.execute(
+            "SELECT * FROM guard_results WHERE prompt_id = %s", (prompt_id,),
+        ).fetchone())
+        throttle = conn.execute("SELECT * FROM throttle_decisions WHERE prompt_id = %s", (prompt_id,)).fetchone()
+        agent = conn.execute("SELECT * FROM agent_runs WHERE prompt_id = %s", (prompt_id,)).fetchone()
+    decision = guard["decision"]
+    prompt["decision"] = decision
+    if decision in {"block", "review"}:
+        state = "blocked" if decision == "block" else "review"
+    elif decision != "allow":
+        state = "checking"
+    elif agent is None:
+        state = "agent_queued"
+    else:
+        state = {"running": "agent_running", "completed": "completed"}.get(agent["status"], "agent_failed")
+    return {
+        "status": "stored", "state": state, "prompt": serialize_prompt(prompt), "guard": guard,
+        "intake": {"source": prompt["source"], "preprocessing": prompt["preprocessing"],
+                   "stored_at": prompt["stored_at"].isoformat()},
+        "throttle": serialize_throttle_decision(throttle) if throttle else None,
+        "agent": serialize_agent_run(agent) if agent else None,
+    }
 
 
 THROTTLE_FIELDS = (

@@ -167,6 +167,13 @@ class PromptScorer:
                 [text], truncation=False, padding=False, return_length=True, verbose=False,
             )["length"][0])
             truncated = token_count > self.encoder.max_seq_length
+            if truncated:
+                # The agent would see the entire original prompt. Never approve an unchecked tail.
+                timings["total"] = (self.timer() - started) * 1000
+                return ScoringResult(
+                    str(prompt_id), "review", None, None, self.model_version,
+                    self.now(), token_count, True, None, timings,
+                ), None
             features = np.asarray(self.encoder.encode(
                 [text], batch_size=1, show_progress_bar=False,
                 convert_to_numpy=True, normalize_embeddings=True,
@@ -207,9 +214,12 @@ def score_and_store(database_url, event, scorer):
 
     saved = db.save_guard_score(
         database_url, result.prompt_id, result.malicious_score, result.attack_type,
-        result.model_version, reason="classifier_inference_failed" if result.outcome == "failed" else None,
+        result.model_version, reason=("model_input_too_long" if result.outcome == "review" else
+                                     "classifier_inference_failed" if result.outcome == "failed" else None),
         checked_at=result.scored_at,
         similarity_score=result.similarity.score if result.similarity is not None else None,
+        scoring_metadata={"outcome": result.outcome, "token_count": result.token_count,
+                          "truncated": result.truncated, "timings_ms": result.timings_ms},
     )
     if saved is None:
         raise RuntimeError("P4 prompt row disappeared before score persistence.")

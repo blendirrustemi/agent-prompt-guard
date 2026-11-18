@@ -93,6 +93,18 @@ CREATE TABLE IF NOT EXISTS attack_aggregate_history (
 
 -- P1/P2 snapshot; older prompts are filled only if their event is delivered again.
 ALTER TABLE prompts ADD COLUMN IF NOT EXISTS preprocessing JSONB;
+-- Server-side arrival time is independent of replay/event timestamps.
+ALTER TABLE prompts ADD COLUMN IF NOT EXISTS stored_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE guard_results ADD COLUMN IF NOT EXISTS scoring_metadata JSONB;
+
+-- Claim execution before contacting Ollama. An interrupted run is never silently repeated.
+ALTER TABLE agent_runs DROP CONSTRAINT IF EXISTS agent_runs_status_check;
+ALTER TABLE agent_runs ADD CONSTRAINT agent_runs_status_check
+    CHECK (status IN ('running', 'completed', 'failed', 'rejected'));
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS run_token UUID;
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS finished_at TIMESTAMPTZ;
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS deadline_at TIMESTAMPTZ;
 
 -- P4 completion survives P7 replacing checked_at with the final routing time.
 ALTER TABLE guard_results ADD COLUMN IF NOT EXISTS scored_at TIMESTAMPTZ;
@@ -121,3 +133,5 @@ CREATE INDEX IF NOT EXISTS guard_results_p5_rebuild_idx
     ON guard_results (p5_feature_version, p5_sequence DESC) WHERE p5_sequence IS NOT NULL;
 CREATE INDEX IF NOT EXISTS guard_results_p6_scores_idx
     ON guard_results (scored_at, prompt_id) WHERE malicious_score IS NOT NULL;
+CREATE INDEX IF NOT EXISTS agent_runs_running_deadline_idx
+    ON agent_runs (deadline_at) WHERE status = 'running';

@@ -95,7 +95,7 @@ class WorkerTests(unittest.TestCase):
         ask_fn = Mock(side_effect=ConnectionError("Ollama is not running"))
         run = handle_message(self.url, self.prompt_with_decision("allow"), ask_fn, "test-model")
         self.assertEqual(run["status"], "failed")
-        self.assertIn("Ollama is not running", run["error"])
+        self.assertIn("ConnectionError", run["error"])
 
     def test_unknown_prompt_is_skipped(self):
         event = {"schema_version": 1, "prompt_id": str(uuid4()), "text": "Hi", "model_version": "test"}
