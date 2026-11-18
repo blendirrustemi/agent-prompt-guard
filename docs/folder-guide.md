@@ -13,7 +13,7 @@
 | `backend/agent/` | LangChain/Ollama agent, two tools, allowed-prompt worker, and temporary guard stub. |
 | `backend/batch/` | Dataset imports and exploratory notebooks, with separate dependencies. |
 | `backend/tests/` | Route, storage, Kafka, agent, and local dataset fixture checks. |
-| `docs/` | Architecture, work plan, team guides, and the database diagram (`database-schema.dbml`, open in dbdiagram.io). |
+| `docs/` | Project report, developer guide, Excel work plan, research notes, and architecture/database diagrams (`database-schema.dbml` opens in dbdiagram.io). |
 
 Today: **prompt box → Flask → Kafka (`prompts_raw`) → consumer (P1–P5) → PostgreSQL**.
 The browser shows `Queued` after Kafka acknowledges delivery, then `Pending check` once
@@ -34,9 +34,12 @@ In parallel, **`prompts_raw` → burst worker (P9/P10) → `throttle_decisions` 
 immediate source blocks and score-based routing. P8 periodically reads stored P4 results and
 persists rolling attack-type counts and repeated-prompt snapshots.
 
-## Next steps
+## Project documentation
 
-Add dashboards for the stored P7/P8 results as a later step:
+- [Project report](project_report.md): datasets, architecture, and testing/experiment sections for the team.
+- [Developer guide](developer-guide.md): setup, configuration, API/event contracts, replay, and checks.
+- [Team work plan](work-plan.xlsx): planned tasks and assigned team members. 
+- [README](../README.md): short overview and quick start.
 
 | Folder | Responsibility |
 |---|---|
@@ -46,11 +49,8 @@ Add dashboards for the stored P7/P8 results as a later step:
 Replay imported rows with `python -m backend.intake.replay`; select dataset/split,
 rate, sources, and optional label/attack-group filters. It uses the browser's same
 Kafka event and P1–P4 path. Wait for the consumer's scorer-ready log after model/reference warm-up;
-the MiniLM download cache is kept in a Compose volume. See the README for configuration and truncation limits.
+the MiniLM download cache is kept in a Compose volume. See the developer guide for configuration and the report for token-limit handling.
 
 Add human-label storage and feedback orchestration around the existing CSV retrainer, and add dashboards. Keep the
 version-two event contract and shared topic names consistent. Runtime packages belong in
 `backend/requirements.txt`; batch/notebook packages belong in `backend/batch/pyproject.toml`.
-Update the README when run commands change.
-
-See the [current architecture](architecture-work-plan-v2.md) and `work-plan.xlsx` for assignments.
