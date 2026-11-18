@@ -176,6 +176,20 @@ def save_guard_score(
     return serialize_guard_result(row) if row else None
 
 
+def get_p6_score_batch(database_url, after, *, limit=500):
+    """Read successfully scored P4 outputs after a (scored_at, prompt_id) cursor."""
+    with connect(database_url) as conn:
+        return conn.execute(
+            """SELECT prompt_id, malicious_score, scored_at
+               FROM guard_results
+               WHERE malicious_score IS NOT NULL AND scored_at IS NOT NULL
+                 AND (scored_at, prompt_id) > (%s, %s)
+               ORDER BY scored_at, prompt_id
+               LIMIT %s""",
+            (after[0], after[1], limit),
+        ).fetchall()
+
+
 def get_p5_input(database_url, prompt_id):
     """Read persisted P1/P3/P4 inputs and P5 idempotency state for one prompt."""
     with connect(database_url) as conn:
