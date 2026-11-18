@@ -55,3 +55,20 @@ def build_raw_event(text, source="web", dataset_prompt_id=None, prompt_id=None, 
         "created_at": timestamp.isoformat(),
         "dataset_prompt_id": str(dataset_prompt_id) if dataset_prompt_id is not None else None,
     })
+
+
+def validate_allowed_event(event):
+    """Validate the existing allowed-topic contract without trusting its text for execution."""
+    if not isinstance(event, dict) or set(event) != {"schema_version", "prompt_id", "text", "model_version"}:
+        raise ValueError("Expected the four allowed prompt fields.")
+    if type(event["schema_version"]) is not int or event["schema_version"] != 1:
+        raise ValueError("Unsupported allowed prompt schema version.")
+    if (not isinstance(event["text"], str) or not event["text"].strip()
+            or len(event["text"]) > MAX_PROMPT_LENGTH or "\x00" in event["text"]):
+        raise ValueError("Invalid allowed prompt text.")
+    if not isinstance(event["model_version"], str) or not event["model_version"].strip():
+        raise ValueError("An allowed prompt needs a model version.")
+    try:
+        return {**event, "prompt_id": str(UUID(event["prompt_id"]))}
+    except (ValueError, TypeError, AttributeError):
+        raise ValueError("prompt_id must be a UUID.") from None

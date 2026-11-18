@@ -173,7 +173,7 @@ class RawEventStorageTests(unittest.TestCase):
             }
         # prompt_id is stored as prompts.id; schema_version describes the message, not the prompt.
         stored = (EVENT_FIELDS - {"schema_version", "prompt_id"}) | {"id"}
-        self.assertEqual(columns, stored | {"preprocessing"})
+        self.assertEqual(columns, stored | {"preprocessing", "stored_at"})
 
     def test_save_raw_event_stores_every_field(self):
         with db.connect(self.url) as conn:

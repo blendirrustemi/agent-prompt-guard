@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 import os
 import signal
 from datetime import datetime, timedelta, timezone
@@ -12,6 +13,7 @@ from confluent_kafka import Consumer, KafkaException
 from dotenv import load_dotenv
 
 from backend import db
+from backend.readiness import mark_ready
 from backend.intake.producer import build_allowed_event, create_producer, flush_or_raise, publish_event
 from backend.intake.topics import PROMPTS_ALLOWED, THROTTLE_DECISIONS, bootstrap_servers
 from .router import route_pending_row, validate_policy
@@ -30,7 +32,7 @@ def env_float(name, default):
 
 def env_seconds(name, default):
     value = float(os.getenv(name, default))
-    if value <= 0:
+    if not math.isfinite(value) or value <= 0:
         raise ValueError(f"{name} must be positive.")
     return value
 
@@ -48,9 +50,16 @@ def process_throttle_message(consumer, message, database_url):
         consumer.commit(message=message, asynchronous=False)
         return None
 
-    db.save_throttle_decision(
-        database_url, {field: event[field] for field in db.THROTTLE_FIELDS}
-    )
+    try:
+        db.save_throttle_decision(
+            database_url, {field: event[field] for field in db.THROTTLE_FIELDS}
+        )
+    except psycopg.errors.ForeignKeyViolation:
+        # P10 stores the raw prompt before publishing. An orphan after data cleanup/
+        # restore cannot be reconstructed from this event and must not poison the group.
+        LOGGER.warning("Skipping orphan throttle decision at %s for prompt %s", location, event["prompt_id"])
+        consumer.commit(message=message, asynchronous=False)
+        return None
     if event["action"] == "block":
         # P10's block is an immediate override; it never waits for a classifier score.
         db.route_guard_result(
@@ -122,13 +131,15 @@ def run(database_url, *, servers=None, allow_max=0.30, block_min=0.70,
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    consumer.subscribe([THROTTLE_DECISIONS])
+    consumer.subscribe([THROTTLE_DECISIONS], on_assign=lambda client, partitions: mark_ready("router"))
     LOGGER.info(
         "P7 consuming %s (allow <= %.3f, block >= %.3f, score timeout %.1fs)",
         THROTTLE_DECISIONS, allow_max, block_min, score_timeout_seconds,
     )
     try:
         while running:
+            # Agent process loss must become visible even while its consumer is down.
+            db.expire_agent_runs(database_url)
             message = consumer.poll(0.25)
             if message is not None:
                 if message.error():
@@ -145,11 +156,13 @@ def run(database_url, *, servers=None, allow_max=0.30, block_min=0.70,
         LOGGER.error("P7 router stopped without advancing further: %s", type(error).__name__)
         raise SystemExit(1) from None
     finally:
+        mark_ready("router", False)
         consumer.close()
         producer.flush(5)
 
 
 def main():
+    mark_ready("router", False)
     load_dotenv(Path(__file__).resolve().parents[2] / ".env")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     database_url = os.getenv("DATABASE_URL", "postgresql://localhost:5432/pijd")

@@ -11,6 +11,7 @@ from confluent_kafka import Consumer, KafkaException
 from dotenv import load_dotenv
 
 from backend import db
+from backend.readiness import mark_ready
 from backend.stream.enrichment import SourceContextCache
 from backend.stream.preprocessing import preprocess_prompt
 from .events import validate_raw_event
@@ -50,6 +51,7 @@ def process_message(consumer, message, database_url, source_context_cache=None, 
 
 
 def main():
+    mark_ready("consumer", False)
     load_dotenv(Path(__file__).resolve().parents[2] / ".env")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     database_url = os.getenv("DATABASE_URL", "postgresql://localhost:5432/pijd")
@@ -83,7 +85,7 @@ def main():
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     try:
-        consumer.subscribe([PROMPTS_RAW])
+        consumer.subscribe([PROMPTS_RAW], on_assign=lambda client, partitions: mark_ready("consumer"))
         LOGGER.info("Consuming %s as %s", PROMPTS_RAW, GROUP_ID)
         while running:
             message = consumer.poll(1.0)
@@ -96,6 +98,7 @@ def main():
         LOGGER.error("Consumer stopped without advancing further: %s", type(error).__name__)
         raise SystemExit(1) from None
     finally:
+        mark_ready("consumer", False)
         consumer.close()
 
 

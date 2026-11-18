@@ -28,9 +28,12 @@ dataset/split and optional label/attack group, and publishes the same raw events
 at a configurable rate with round-robin simulated sources. Each new submission
 has a fresh UUID and retains its dataset link. Invalid/overlength rows are skipped
 without truncation; successive invocations provide burst/drift test traffic.
-Separately, the optional LangChain/Ollama worker consumes `prompts_allowed`, checks the stored
+The Compose LangChain/Ollama worker consumes `prompts_allowed`, checks the stored
 `allow` decision, and records outcomes in `agent_runs`. A temporary guard stub supplies that
-demo path; neither the stub nor the agent is started by the default intake stack.
+isolated demo path; normal execution uses P7's durable allowed-prompt outbox.
+The API exposes processing state and agent results; `python3 -m backend.ask` submits and waits through HTTP.
+The browser follows each prompt through its final verdict and renders the stored agent answer or a
+hold/failure explanation. Dashboards are deferred.
 
 The diagram and Excel work plan describe the full target. Their `raw_prompts` label maps to
 the implemented `prompts_raw`; `clean_prompts` maps to the implemented `prompts_allowed` agent
@@ -48,7 +51,9 @@ a stored decision. Invalid events are logged with topic/partition/offset and ski
 storage or offset failures stop the consumer for Compose to restart. See the [README](../README.md)
 for commands and the [database sketch](database-schema.dbml) for the current schema.
 The database PNG predates the preprocessing column and source index; DBML/SQL
-describe the current schema. P1–P5, P7/P8, and P9/P10 are implemented; P6 remains planned.
+describe the current schema. P1–P10 are implemented, including the separate P6 ADWIN worker.
+P6 currently logs retraining alerts; Batch 4 is a manual reviewed-CSV command. Automated feedback
+orchestration and dashboards are separate follow-up work.
 
 ### Implemented P3–P4: similarity and classification
 
@@ -58,7 +63,7 @@ contains only malicious NeurAlchemy training rows plus bounded recent high-confi
 It adapts the semantic-intent comparison in [PromptGuard](https://www.nature.com/articles/s41598-025-31086-y),
 with online memory as a project extension. It does not alter the binary probability or route prompts.
 Batch 3 runs for probability >= 0.5; lower scores have no attack type. Inference matches the saved
-256-token truncation; original text is preserved and truncation is reported explicitly.
+256-token limit; longer prompts enter review without partial-text inference. Original text is preserved.
 
 P4 calls `save_guard_score` for successful and failed inference, persisting the classifier output,
 P3 similarity for P5, and completion time before the intake consumer proceeds. Timing details stay
@@ -103,7 +108,8 @@ Scores at or below `P7_ALLOW_MAX_SCORE` (default 0.30) allow, scores at or above
 `P7_BLOCK_MIN_SCORE` (default 0.70) block, and the middle band enters review. If no score arrives
 within `P7_SCORE_TIMEOUT_SECONDS` (default 30), P7 fails closed to review. Allow events are sent
 to `prompts_allowed` through a PostgreSQL transactional outbox. P4 stores score/type/completion
-time with the decision still pending; P7 is the final-decision writer.
+time with the decision still pending; P7 is the final-decision writer. Missing P10 output expires to
+review after 30 seconds from storage. Incomplete model coverage and failed inference cannot allow execution.
 
 The `aggregation` service refreshes a 60-second event-time window every 10 seconds. It counts
 predicted P4 attack types and the top ten repeated P1-normalized prompt texts per type. P8 writes

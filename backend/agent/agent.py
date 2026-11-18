@@ -5,7 +5,9 @@ Ask it directly (no Kafka or database needed): python -m backend.agent.agent "Wh
 """
 
 import argparse
+import json
 import os
+import sys
 from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
@@ -50,7 +52,7 @@ def build_agent(model=None, base_url=None):
 
 def ask(agent, text):
     """Run one prompt through the agent; returns the final answer and every tool call it made."""
-    result = agent.invoke({"messages": [{"role": "user", "content": text}]})
+    result = agent.invoke({"messages": [{"role": "user", "content": text}]}, {"recursion_limit": 12})
     tool_calls = [
         {"name": call["name"], "args": call["args"]}
         for message in result["messages"]
@@ -62,11 +64,18 @@ def ask(agent, text):
 def main():
     load_dotenv()
     parser = argparse.ArgumentParser(description="Ask the agent one question.")
-    parser.add_argument("text", help="The prompt to send to the agent")
+    parser.add_argument("text", nargs="?", help="Prompt text; reads stdin when omitted")
     parser.add_argument("--model", help="Ollama model to use (default: OLLAMA_MODEL from .env)")
+    parser.add_argument("--json", action="store_true", help="Return one machine-readable result")
     args = parser.parse_args()
 
-    answer = ask(build_agent(args.model), args.text)
+    text = args.text if args.text is not None else sys.stdin.read()
+    if not text.strip():
+        parser.error("A prompt is required.")
+    answer = ask(build_agent(args.model), text)
+    if args.json:
+        print(json.dumps({"response": answer.response, "tool_calls": answer.tool_calls}))
+        return
     for call in answer.tool_calls:
         print(f"[tool] {call['name']}({call['args']})")
     print(answer.response)

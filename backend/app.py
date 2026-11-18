@@ -47,10 +47,10 @@ def create_app(test_config=None):
 
     @app.get("/api/prompts/<uuid:prompt_id>")
     def get_prompt(prompt_id):
-        prompt = db.get_prompt(app.config["DATABASE_URL"], prompt_id)
-        if prompt is None:
+        result = db.get_prompt_result(app.config["DATABASE_URL"], prompt_id)
+        if result is None:
             return jsonify(error="This prompt is not stored yet."), 404
-        return jsonify(prompt=prompt, status="stored")
+        return jsonify(result)
 
     @app.post("/api/prompts")
     def submit_prompt():

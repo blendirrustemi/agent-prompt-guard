@@ -3,6 +3,7 @@
 import json
 import os
 import unittest
+import psycopg
 from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 from uuid import uuid4
@@ -40,6 +41,17 @@ def throttle_event(prompt_id, action="allow", decided_at=NOW, reason=None):
 
 
 class RouterPolicyTests(unittest.TestCase):
+    def test_orphan_throttle_event_is_skipped_without_poisoning_the_consumer(self):
+        event = throttle_event(str(uuid4()))
+        consumer, message = Mock(), Mock()
+        message.value.return_value = json.dumps(event).encode()
+        with patch("backend.stream.router_worker.db.save_throttle_decision",
+                   side_effect=psycopg.errors.ForeignKeyViolation("missing prompt")), \
+             patch("backend.stream.router_worker.db.route_guard_result") as route:
+            self.assertIsNone(process_throttle_message(consumer, message, "unused"))
+        consumer.commit.assert_called_once_with(message=message, asynchronous=False)
+        route.assert_not_called()
+
     def test_thresholds_are_inclusive_and_middle_is_review(self):
         self.assertEqual(decision_for_score(0.30, 0.30, 0.70), ("allow", "score_below_allow_threshold"))
         self.assertEqual(decision_for_score(0.70, 0.30, 0.70), ("block", "score_above_block_threshold"))
@@ -55,10 +67,12 @@ class RouterPolicyTests(unittest.TestCase):
                 decision_for_score(value, 0.3, 0.7)
 
     def test_missing_and_late_scores_fail_closed(self):
-        base = {"decided_at": NOW, "malicious_score": None, "checked_at": None}
+        base = {"decided_at": NOW, "malicious_score": None, "checked_at": None,
+                "scoring_metadata": {"truncated": False}}
         self.assertIsNone(route_pending_row(base, NOW + timedelta(seconds=29), 0.3, 0.7, 30))
         failed = {**base, "checked_at": NOW + timedelta(seconds=2)}
-        self.assertIsNone(route_pending_row(failed, NOW + timedelta(seconds=29), 0.3, 0.7, 30))
+        self.assertEqual(route_pending_row(failed, NOW + timedelta(seconds=29), 0.3, 0.7, 30),
+                         ("review", "classifier_inference_failed"))
         self.assertEqual(
             route_pending_row(failed, NOW + timedelta(seconds=30), 0.3, 0.7, 30),
             ("review", "classifier_inference_failed"),
@@ -101,6 +115,7 @@ class RouterPolicyTests(unittest.TestCase):
         rows = [{
             "prompt_id": str(uuid4()), "throttle_action": "allow", "decided_at": NOW,
             "malicious_score": 0.2, "checked_at": NOW + timedelta(seconds=1),
+            "scoring_metadata": {"truncated": False},
         }]
         with patch("backend.stream.router_worker.db.get_pending_routes", return_value=rows), \
              patch("backend.stream.router_worker.db.route_guard_result", return_value=True) as route:
@@ -168,7 +183,8 @@ class RouterStorageTests(unittest.TestCase):
         db.save_throttle_decision(self.url, {field: allow[field] for field in db.THROTTLE_FIELDS})
         ready = db.get_pending_routes(self.url, ready_before=NOW - timedelta(seconds=30))
         self.assertEqual(ready, [])
-        db.save_guard_score(self.url, prompt_id, 0.8, "obfuscation", "b2-v1", checked_at=NOW + timedelta(seconds=1))
+        db.save_guard_score(self.url, prompt_id, 0.8, "obfuscation", "b2-v1", checked_at=NOW + timedelta(seconds=1),
+                            scoring_metadata={"truncated": False})
         ready = db.get_pending_routes(self.url, ready_before=NOW - timedelta(seconds=30))
         self.assertEqual([str(row["prompt_id"]) for row in ready], [prompt_id])
 

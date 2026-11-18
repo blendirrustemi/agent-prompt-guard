@@ -58,13 +58,20 @@ function addPrompt(prompt, origin, deliveryStatus) {
     const labels = { pending: "Pending check", allow: "Allowed", block: "Blocked", review: "Needs review" };
     status.textContent = deliveryStatus === "queued" ? "Queued" : labels[prompt.decision] || "Pending check";
     meta.append(time, status);
-    article.append(text, meta);
+    const reply = document.createElement("div");
+    reply.className = "message-response";
+    reply.hidden = true;
+    const replyLabel = document.createElement("p");
+    replyLabel.className = "response-label";
+    const replyText = document.createElement("p");
+    replyText.className = "response-text";
+    reply.append(replyLabel, replyText);
+    article.append(text, meta, reply);
     messages.append(article);
     workspace.classList.add("has-messages");
     messages.scrollTop = messages.scrollHeight;
-    if (deliveryStatus === "queued") {
-        setTimeout(() => confirmStorage(prompt.id, status), 2_000);
-    }
+    const view = { article, status, reply, replyLabel, replyText };
+    setTimeout(() => followResult(prompt.id, view), 2_000);
 
     if (animateTransition) {
         const composerTarget = form.getBoundingClientRect();
@@ -88,18 +95,65 @@ function addPrompt(prompt, origin, deliveryStatus) {
     }
 }
 
-async function confirmStorage(promptId, status) {
-    if (!status.isConnected) return;
-    try {
-        const { prompt } = await api(`/api/prompts/${promptId}`);
-        if (!status.isConnected) return;
-        const labels = { pending: "Pending check", allow: "Allowed", block: "Blocked", review: "Needs review" };
-        status.textContent = labels[prompt.decision] || "Pending check";
-        return;
-    } catch {
-        // Missing rows and temporary read failures leave an acknowledged prompt queued.
+function renderResult(result, view) {
+    const { article, status, reply, replyLabel, replyText } = view;
+    const state = result.state || { allow: "agent_queued", block: "blocked", review: "review" }[result.prompt.decision] || "checking";
+    const labels = {
+        checking: "Checking", agent_queued: "Waiting for answer", agent_running: "Answering",
+        completed: "Allowed", blocked: "Blocked", review: "Needs review", agent_failed: "Answer failed",
+    };
+    article.dataset.state = state;
+    if (status.textContent !== labels[state]) status.textContent = labels[state] || "Checking";
+
+    let text = "";
+    let label = "Prompt Guard";
+    if (state === "agent_queued" || state === "agent_running") {
+        label = "Assistant";
+        text = state === "agent_running" ? "Preparing your answer…" : "Your prompt was allowed. Waiting for the assistant…";
+    } else if (state === "completed") {
+        label = "Assistant";
+        text = result.agent?.response || "The assistant returned an empty response. Please try again.";
+    } else if (state === "blocked") {
+        text = result.guard?.reason?.startsWith("throttle_")
+            ? "Too many requests were received from this connection. Please wait before trying again."
+            : "The guard blocked this prompt, so it wasn’t sent to the assistant.";
+    } else if (state === "review") {
+        const reason = result.guard?.reason;
+        if (reason === "model_input_too_long") {
+            text = "This prompt is too long for the guard to check completely. Shorten it and try again.";
+        } else if (reason === "score_in_review_band") {
+            text = "The guard was uncertain about this prompt. It was held for review and wasn’t sent to the assistant.";
+        } else {
+            text = "The guard couldn’t complete its checks. This prompt was held for review and wasn’t sent to the assistant.";
+        }
+    } else if (state === "agent_failed") {
+        label = "Assistant";
+        text = "The assistant couldn’t complete this request. Please try again.";
     }
-    if (status.isConnected) setTimeout(() => confirmStorage(promptId, status), 2_000);
+    reply.hidden = !text;
+    if (replyLabel.textContent !== label) replyLabel.textContent = label;
+    // Render model output as text, never HTML supplied by the model or prompt.
+    if (replyText.textContent !== text) replyText.textContent = text;
+    const pending = state === "agent_queued" || state === "agent_running";
+    reply.classList.toggle("is-pending", pending);
+    reply.classList.toggle("is-notice", state === "blocked" || state === "review" || state === "agent_failed");
+    reply.setAttribute("aria-busy", String(pending));
+    return ["completed", "blocked", "review", "agent_failed"].includes(state);
+}
+
+async function followResult(promptId, view) {
+    if (!view.article.isConnected) return;
+    try {
+        const result = await api(`/api/prompts/${promptId}`);
+        if (!view.article.isConnected) return;
+        const wasAtBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 80;
+        const finished = renderResult(result, view);
+        if (wasAtBottom) messages.scrollTop = messages.scrollHeight;
+        if (finished) return;
+    } catch {
+        // Storage/API outages preserve the last state and never resubmit the prompt.
+    }
+    if (view.article.isConnected) setTimeout(() => followResult(promptId, view), 2_000);
 }
 
 async function api(url, options = {}) {
