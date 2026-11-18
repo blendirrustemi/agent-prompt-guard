@@ -31,7 +31,6 @@ PostgreSQL stores prompts, scores, decisions, and agent results.
 P3 similarity and P5 anomaly scores are advisory. P4 uses Batch 2 for binary scoring
 and Batch 3 for attack typing; P7 combines the binary score with P10 throttling.
 The browser shows processing progress, guard verdicts, and allowed-prompt answers.
-Dashboards remain future work.
 
 ## Prerequisites
 

@@ -6,26 +6,24 @@
 
 ## Introduction
 
-PIJD is a prompt-injection and jailbreak guard for an AI agent: incoming prompts are checked and routed to allow, block, or review before agent execution.
+The focus of this project is to build a prompt-injection and jailbreak guard for an AI agent: incoming prompts are checked and routed to allow, block, or review before agent execution.
 
 The implemented runtime is **HTTP input → Kafka → guard checks → P7 routing → allowed prompts → agent → stored answer**, exposed through the HTTP API and CLI.
 Dataset replay feeds the same Kafka/consumer path.
 The browser shows **Queued**, **Checking**, and then the guard verdict. P4 scores with Batch 2,
 and P7 combines that score with P10 throttling. Allowed prompts reach the Compose agent worker
 automatically; the browser waits for and displays its answer. Block/review outcomes explain why
-the prompt was held. Dashboards remain future work.
+the prompt was held. 
 
 ## Datasets utilised
 
+We used three datasets from Hugging Face. NeurAlchemy was our main dataset for training, validation, and testing. Two smaller datasets, deepset and jackhhao, were kept separate from training and used to check how well the models generalised to prompts from other sources.
+
 ### NeurAlchemy
 
-The imported NeurAlchemy data provide prompt text, benign/malicious labels, and attack categories.
-The current batch models use the imported `core` data while preserving the original train, validation, and test splits.
-B3 uses the six-way `attack_group` labels for malicious rows.
-
-The importer retains an `include_in_baseline` flag for rows from `neuralchemy_v1`, excluding `control` and `chain_of_thought`.
-That flag is metadata, not a training filter in the current NeurAlchemy batch models.
-Import IDs use the original source split and row index, so filtering and deduplication do not renumber them.
+The [NeurAlchemy Prompt Injection Dataset](https://huggingface.co/datasets/neuralchemy/Prompt-injection-dataset) contains benign prompts as well as prompt-injection and jailbreak examples which were used to train the batch 1 and 2 binary classification models. The dataset also includes attack-category labels, which were used for batch 3's multiclass attack classifier. 
+We kept the dataset's original training, validation, and test splits. Initially, we planned to use only rows marked as neuralchemy_v1 in the source column. However, we later expanded this to include all sources, giving the models a wider variety of prompts to learn from.
+For Batch 3, we grouped the original attack categories into six broader families: instruction manipulation, jailbreak/persona manipulation, obfuscation, information extraction, indirect injection/agent manipulation, and adversarial attacks. This reduced the number of separate labels and brought related attack techniques together. 
 
 ### External evaluation datasets
 
@@ -57,14 +55,13 @@ Saved B1 and B2 artifacts are compared on the same imported external-test rows.
 
 #### Batch 2: embedding-based binary classification
 
-Batch 2 uses a frozen `all-MiniLM-L6-v2` encoder with a Logistic Regression classifier.
-Its normalized 384-dimensional prompt embeddings are also used by P3 and B3 during streaming inference.
-The deployed classifier returns a class-1 malicious probability; P7 owns the final routing decision.
+Batch 2 uses the pretrained all-MiniLM-L6-v2 encoder to convert the prompts into numerical features. This is the main difference compared to batch 1, which uses TF-IDF. The MiniLM encoder outputs dense, 384-dimensional embeddings designed to place semantically similar text close together. 
+Each prompt is converted into a normalised embedding, which becomes the input to a Logistic Regression classifier. We trained the classifier using the benign/malicious labels, with C=1.0, the lbfgs optimiser, and a maximum of 1000 iterations. Its output is a probability between zero and one representing how likely the prompt is to be malicious. We retained the encoder’s default limit of 256 tokens. The batch 2 model achieved a macro-F1 of 0.94 on the NeurAlchemy test split. It also generalised better than Batch 1 to the external datasets, achieving macro-F1 scores of 0.66 on deepset and 0.62 on jackhhao. We therefore integrated it into P4 to supply the maliciousness score used by P7 for final routing. External performance remained a bit limited: its false-positive rates were approximately 36% and 63%, respectively.
 
 #### Batch 3: attack-type classification
 
-B3 uses the imported six-way `attack_group` labels for malicious NeurAlchemy rows and preserves their train/validation/test splits.
-It supplies attack types alongside the binary model in P4 and saves its classifier, configuration, and evaluation metrics.
+Batch 3 identifies which of the six attack families a malicious prompt belongs to. We used the same frozen encoder and normalised 384-dimensional embeddings as Batch 2, but trained the classifier only on malicious NeurAlchemy prompts mapped to those families. The classifier uses multinomial Logistic Regression, with a softmax function producing probabilities across the six classes. The predicted attack family is the class with the highest probability. We used balanced class weights to give greater weight to less frequent families.
+Batch 3 achieved a macro-F1 of 0.76 on the NeurAlchemy test split. During streaming inference, it reuses Batch 2’s embedding and supplies an attack-family label when the binary maliciousness score is at least 0.5. This label describes the suspected attack; it does not determine whether the prompt is allowed, blocked, or reviewed.
 
 #### Batch 4: reviewed-label retraining
 
