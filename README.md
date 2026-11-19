@@ -8,11 +8,11 @@ and routes each prompt to **allow**, **block**, or **review** before agent execu
 
 - **[Project report](docs/project_report.md)** - introduction, datasets, system architecture, and testing/experiment sections. 
 - **[Developer guide](docs/developer-guide.md)** - detailed setup, APIs, event contracts, configuration, dataset replay, training, checks, and troubleshooting.
-- [Folder guide](docs/folder-guide.md) - explains what each folder contains.
-- [Research-paper notes](docs/research-papers.md) — research sources for the final report.
-- [Team work plan](docs/work-plan.xlsx) - planned tasks and assigned team members. 
+- **[Folder guide](docs/folder-guide.md)** - explains what each folder contains.
+- **[Research-paper notes](docs/research-papers.md)** - research papers used in this project and referenced in the project report. 
+- **[Team work plan](docs/work-plan.xlsx)** - planned tasks and assigned team members. 
 
-## Architecture at a glance
+## Architecture - simple overview 
 
 ```text
 Browser or HTTP CLI -> Flask -> Kafka prompts_raw
