@@ -1,0 +1,3 @@
+phase,target_prompts_per_s,submitted,completed,unfinished,allow,block,review,mean_ms,median_ms,p95_ms,elapsed_s,throughput_per_s,actual_send_rate_per_s
+slow,1,20,20,0,9,10,1,277.106,195.68,505.362,19.418,1.03,1.0
+faster,5,20,20,0,9,10,1,301.775,323.531,387.986,4.324,4.625,4.981
