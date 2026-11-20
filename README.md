@@ -8,11 +8,11 @@ and routes each prompt to **allow**, **block**, or **review** before agent execu
 
 - **[Project report](docs/project_report.md)** - introduction, datasets, system architecture, and testing/experiment sections. 
 - **[Developer guide](docs/developer-guide.md)** - detailed setup, APIs, event contracts, configuration, dataset replay, training, checks, and troubleshooting.
-- [Folder guide](docs/folder-guide.md) - explains what each folder contains.
-- [Research-paper notes](docs/research-papers.md) — research sources for the final report.
-- [Team work plan](docs/work-plan.xlsx) - planned tasks and assigned team members. 
+- **[Folder guide](docs/folder-guide.md)** - explains what each folder contains.
+- **[Research-paper notes](docs/research-papers.md)** - research papers used in this project and referenced in the project report. 
+- **[Team work plan](docs/work-plan.xlsx)** - planned tasks and assigned team members. 
 
-## Architecture at a glance
+## Architecture - simple overview 
 
 ```text
 Browser or HTTP CLI -> Flask -> Kafka prompts_raw
@@ -31,7 +31,6 @@ PostgreSQL stores prompts, scores, decisions, and agent results.
 P3 similarity and P5 anomaly scores are advisory. P4 uses Batch 2 for binary scoring
 and Batch 3 for attack typing; P7 combines the binary score with P10 throttling.
 The browser shows processing progress, guard verdicts, and allowed-prompt answers.
-Dashboards remain future work.
 
 ## Prerequisites
 
