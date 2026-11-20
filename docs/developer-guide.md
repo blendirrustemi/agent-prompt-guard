@@ -550,6 +550,38 @@ inference latency. Latency includes text feature or embedding generation and pre
 but excludes model loading. Cross-dataset duplicate prompts are represented by whichever
 source the importer retained.
 
+## Simple guard latency and throughput test
+
+With the guard services running and NeurAlchemy imported, run from the project root:
+
+```sh
+python -m backend.tests.guard_benchmark
+```
+
+This sends three warm-up prompts, then the same 20 short NeurAlchemy test prompts
+(10 benign, 10 malicious) at target rates of 1 and 5 prompts per second.
+The benchmark measures Kafka submission to the recorded final guard decision;
+Flask/browser overhead, agent execution and human review are excluded. It does
+not train models or change thresholds. Allowed prompts follow the normal agent
+path if the agent worker is running; its execution time is excluded from the timer.
+
+The script writes `results/guard_latency_summary.csv` and prints a summary table.
+Only the summary is saved; per-prompt results are kept in memory for calculating the
+statistics. Running it again replaces the summary CSV.
+Throughput is completed decisions divided by
+the duration from the first submission to the last final decision, including sending
+intervals. These small runs measure performance at the stated rates, not maximum capacity.
+The benchmark is run manually; its filename does not match automated `test_*.py` discovery.
+
+To run inside Docker without installing host Python dependencies, copy the current
+script into an existing consumer container and export the summary to the project root:
+
+```sh
+docker compose --env-file .env -f backend/compose.yaml cp backend/tests/guard_benchmark.py consumer:/app/backend/tests/guard_benchmark.py
+docker compose --env-file .env -f backend/compose.yaml exec -T consumer python -m backend.tests.guard_benchmark --output /app/guard_latency_summary.csv
+docker compose --env-file .env -f backend/compose.yaml cp consumer:/app/guard_latency_summary.csv .
+```
+
 ## Checks
 
 The complete-flow checks use real Kafka and PostgreSQL with injected deterministic model/agent
