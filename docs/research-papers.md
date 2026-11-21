@@ -94,7 +94,7 @@ This paper discusses ways to incorporate expert feedback into model updates, inc
 
 **Reason for including:**
 
-This study compares online anomaly detectors across algorithm families and data characteristics, including tree-based methods. It provides background for selecting an online detector, but does not evaluate our seven-feature prompt representation or project-specific Half-Space Trees settings.
+This study compares online anomaly detectors across algorithm families and data characteristics, including tree-based methods. It provides background for selecting an online detector.
 
 ## 9. River: Machine Learning for Streaming Data in Python (2021)
 
