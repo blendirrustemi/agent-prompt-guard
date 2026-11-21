@@ -43,7 +43,7 @@ P8 reads stored classifications to maintain rolling attack summaries.
 These stages branch rather than forming a single sequential P1–P10 chain.
 
 The [architecture diagram](architecture-diagram.png) illustrates the wider target, including dashboards and the review/retraining loop.
-Dashboards and human-label collection are not yet part of the implemented runtime described here.
+A Streamlit dashboard app with one sidebar section per member is part of the runtime; so far it has the P9/P10 burst and agent tool-use pages. The other members' pages and human-label collection are not yet implemented.
 The [team work plan](work-plan.xlsx) shows the planned tasks and the assigned team members. 
 
 ### Batch models
