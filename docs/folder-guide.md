@@ -11,6 +11,7 @@
 | `backend/intake/` | Version-two raw events, publishers, topic names, dataset replay CLI, and the intake consumer. |
 | `backend/stream/` | P1/P2 preprocessing; P3 similarity, P4 Batch 2/3 scoring, P5 Half-Space Trees; P6 score drift; P7 routing; P8 aggregation; P9/P10 throttling. |
 | `backend/agent/` | LangChain/Ollama agent, two tools, allowed-prompt worker, and temporary guard stub. |
+| `backend/dashboard/` | Streamlit app (`app.py`) with one sidebar section per member, shared PostgreSQL access (`data.py`), and member pages in `views/`. |
 | `backend/batch/` | Dataset imports and exploratory notebooks, with separate dependencies. |
 | `backend/tests/` | Route, storage, Kafka, agent, and local dataset fixture checks. |
 | `docs/` | Project report, developer guide, Excel work plan, research notes, and architecture/database diagrams (`database-schema.dbml` opens in dbdiagram.io). |
@@ -44,13 +45,14 @@ persists rolling attack-type counts and repeated-prompt snapshots.
 | Folder | Responsibility |
 |---|---|
 | `backend/stream/` | Runtime guard stages; P6 currently logs drift alerts. Durable alert/retraining orchestration remains follow-up work. |
-| `backend/dashboard/` | Streamlit graphs and human review pages. |
+| `backend/dashboard/views/` | Remaining member dashboard pages and the human review page. |
 
 Replay imported rows with `python -m backend.intake.replay`; select dataset/split,
 rate, sources, and optional label/attack-group filters. It uses the browser's same
 Kafka event and P1–P4 path. Wait for the consumer's scorer-ready log after model/reference warm-up;
 the MiniLM download cache is kept in a Compose volume. See the developer guide for configuration and the report for token-limit handling.
 
-Add human-label storage and feedback orchestration around the existing CSV retrainer, and add dashboards. Keep the
+Add human-label storage and feedback orchestration around the existing CSV retrainer, and add the remaining
+dashboard pages (see [Dashboards](developer-guide.md#dashboards)). Keep the
 version-two event contract and shared topic names consistent. Runtime packages belong in
 `backend/requirements.txt`; batch/notebook packages belong in `backend/batch/pyproject.toml`.
