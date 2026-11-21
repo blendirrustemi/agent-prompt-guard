@@ -24,12 +24,16 @@
     "warm_start": false
   },
   "training_data": {
-    "source_dataset": "neuralchemy",
-    "include_in_baseline_filter": false
+    "source": "reviewed CSV",
+    "train_count": 140,
+    "validation_count": 60,
+    "selection_metric": "validation macro-F1; candidate must strictly exceed current model",
+    "validation_macro_f1": 0.849624060150376,
+    "batch4_run": "promoted_20261121T121133Z"
   },
-  "train_macro_f1": 0.9645301275623819,
-  "validation_macro_f1": 0.9499930683918669,
-  "neuralchemy_test_macro_f1": 0.9442307848575007,
+  "train_macro_f1": 0.942845478669116,
+  "validation_macro_f1": 0.849624060150376,
+  "neuralchemy_test_macro_f1": null,
   "package_versions": {
     "scikit-learn": "1.9.1",
     "sentence-transformers": "5.7.0",
