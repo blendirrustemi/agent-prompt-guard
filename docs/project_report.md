@@ -6,14 +6,13 @@
 
 ## Introduction
 
-The focus of this project is to build a prompt-injection and jailbreak guard for an AI agent: incoming prompts are checked and routed to allow, block, or review before agent execution.
+AI agents may act on untrusted user input or external content when processing natural-language requests. The model can be redirected from its intended task or produce unsafe outputs by prompt-injection and jailbreak attacks. Programmable guardrails add an extra check before an agent act because training-time alignment alone may not enforce every application-specific rule at runtime ([Rebedea et al., 2023](https://doi.org/10.18653/v1/2023.emnlp-demo.40)). Hence, this project builds a prompt-injection and jailbreak guard.
 
-The implemented runtime is **HTTP input → Kafka → guard checks → P7 routing → allowed prompts → agent → stored answer**, exposed through the HTTP API and CLI.
-Dataset replay feeds the same Kafka/consumer path.
-The browser shows **Queued**, **Checking**, and then the guard verdict. P4 scores with Batch 2,
-and P7 combines that score with P10 throttling. Allowed prompts reach the Compose agent worker
-automatically; the browser waits for and displays its answer. Block/review outcomes explain why
-the prompt was held. 
+The system uses ten streaming pipelines: **P1** ingests prompts and cleans text; **P2** adds source context; **P3** checks similarity to known attack prompts; **P4** classifies prompts and predicts attack types; **P5** detects anomalous prompts; **P6** monitors score drift; **P7** routes prompts to allow, block, or review; **P8** aggregates attack types and repeated patterns; **P9** detects source bursts; and **P10** applies rate limits. Allowed prompts can reach the agent, while the system stores decisions and results for analysis.
+
+
+The project compares classical and embedding-based binary classifiers in Batches 1 and 2, adds attack-type classification in Batch 3, and evaluates reviewed-label retraining in Batch 4. Across its experiments, it measures model performance on primary and external datasets, runtime latency and throughput, drift and burst behavior, and guarded versus unguarded agent runs. The completed dashboards track decision trends, model comparisons, drift alerts, attack-type and Top-10 pattern summaries, and review-queue and throttling activity. Research on sliding-window stream summaries and model adaptation gives context for these design areas ([Gou et al., 2023](https://doi.org/10.1109/TKDE.2022.3151140); [Lu et al., 2019](https://doi.org/10.1109/TKDE.2018.2876857)).
+
 
 ## Datasets utilised
 
@@ -50,8 +49,7 @@ The [team work plan](work-plan.xlsx) shows the planned tasks and the assigned te
 
 #### Batch 1: classical binary classification
 
-Batch 1 uses TF-IDF features and Logistic Regression to distinguish benign and malicious prompts.
-Saved B1 and B2 artifacts are compared on the same imported external-test rows.
+TF-IDF features with Logistic Regression is used in Batch 1 to classify prompts as benign or malicious, and then we compare the saved B1 and B2 artifacts on the same imported external-test rows. ([Rebedea et al., 2023](https://doi.org/10.18653/v1/2023.emnlp-demo.40)), in NeMo Guardrails, discuss the runtime overhead of programmable guardrails and the potential role of specialized execution-rail models, which motivates a lightweight local classifier in the guard path. Although the paper does not evaluate TF-IDF or Logistic Regression, Batch 1 uses both as the project's classical baseline for comparison.
 
 #### Batch 2: embedding-based binary classification
 
@@ -70,6 +68,8 @@ Both splits must contain both labels; validation rows are never used to fit the 
 The repository does not currently collect these labels in a review UI.
 Promotion replaces the active Batch 2 classifier only if the candidate's validation macro-F1 is strictly higher than the current classifier's score on the same labelled validation rows.
 The encoder and B3 classifier remain unchanged; P6 alerts request human consideration rather than automatically running or promoting B4.
+
+Batch 4 was trained using the repository's reviewed-label CSV, which had 140 rows (70 per label) and validated on 60 rows (30 per label). The existing classifier scored a macro-F1 of 0,6011, while the candidate scored 0.8496 on the same validation split. Additionally, the existing model produced the confusion matrix `[[9, 21], [0, 30]]`, and the candidate produced `[[24, 6], [3, 27]]` with true labels as rows and predicted labels as columns (benign, malicious). The candidate strictly improved over the baseline, so the pipeline promoted it and saved the run report, previous classifier, and previous config under `backend/batch/models/batch4_runs/promoted_20261121T121133Z/`. This validation result applies only to the reviewed sample and does not replace untouched test or external evaluation.
 Operational instructions are in the [developer guide](developer-guide.md#batch-4-reviewed-label-retraining).
 
 ### P1/P2: ingestion, preprocessing and source enrichment
@@ -154,6 +154,8 @@ outbox retries Kafka publishing after a restart. P8 uses P1's NFC/whitespace-nor
 `preprocessing.cleaned_text`, falling back to the same normalization of the original text when
 no preprocessing snapshot exists. It uses predicted attack types, not dataset labels.
 
+P7's role as a pre-execution allow/block/review gate is supported in NeMo Guardrails, where ([Rebedea et al., 2023](https://doi.org/10.18653/v1/2023.emnlp-demo.40)) describe reprogrammable, model-independent runtime rails and input moderation ahead of a dialogue system. In this implementation, P8's attack-type counts and repeated-pattern summary are operational monitoring outputs that do not override P7. Additionally, the sliding-window and Top-K literature motivates this rolling summary ([Gou et al., 2023](https://doi.org/10.1109/TKDE.2022.3151140)). Our implementation uses exact aggregation, and it does not implement the paper's approximate sketch framework or claim its complexity or error bounds.
+
 ### P9/P10: burst detection and rate limiting
 
 The `burst` service (`python -m backend.stream.burst_worker`, group `pijd-burst-v1`) reads
@@ -215,6 +217,15 @@ B3's saved classifier and configuration include its attack-type evaluation metri
 
 ### Model comparison results
 
+Batch 4 compared both models using the reviewed-label CSV on the same 60 validation prompts (30 benign and 30 malicious). the current model scored a macro-F1 of 0.6011, while candidate scored 0.8496 and was promoted. In the table below, the true labels and predictions, as rows and columns respectively, were mapped into confusion matrices and ordered benign then malicious: 
+
+| Model | Validation macro-F1 | Confusion matrix |
+| --- | ---: | --- |
+| Current | 0.6011 | `[[9, 21], [0, 30]]` |
+| Batch 4 candidate (promoted) | 0.8496 | `[[24, 6], [3, 27]]` |
+
+`backend/batch/models/batch4_runs/` is where the reports, including label counts and candidate training metrics are located. Because the reviewed set is small, the promotion metric reflects model selection and should not be treated as an unbiased final test estimate.
+
 ### Guard latency and throughput
 
 The guard latency and throughput were tested using the same 20 short NeurAlchemy test prompts (10 benign and 10 malicious) at target rates of 1 and 5 prompts per second. Latency was measured from just before publishing to Kafka until the recorded final guard decision, excluding agent execution. Throughput was completed decisions divided by the time from the first submission to the last decision, including the sending intervals. The following is a summary of the results:
@@ -242,6 +253,11 @@ P9 counted the attacker's prompts 1–9 in its window, and P10 allowed them. At 
 The run also showed P4 false positives. Of the 14 prompts that P10 allowed, P7 blocked 7 and sent 6 to review on the model score; only one was allowed. Simple questions such as "What is 12 times 7?" scored above the block threshold. This does not affect the throttling result, because P7's reason separates throttle blocks from score blocks, but it suggests the classifier is too strict on short benign prompts. This run shows the behaviour at one burst rate and one threshold; it does not measure the maximum rate P9/P10 can handle.
 
 ### Retraining before and after
+
+[Batch 4: reviewed-label retraining](#batch-4-reviewed-label-retraining) reports the validation metrics and confusion matrices for the current and candidate models. The candidate strictly improved macro-F1 and was promoted, though its validation score is not an untouched test result.
+
+When data distributions change, concept-drift research treats retraining as one way to adapt ([Lu et al., 2019](https://doi.org/10.1109/TKDE.2018.2876857)),, which gives context for comparing the reviewed-label candidate with the active model. In this project, Batch 4 was run manually on reviewed data. P6's score-distribution alert does not trigger retraining automatically, and the strict macro-F1 promotion rule is our own selection policy.
+
 
 ### Guarded versus unguarded agent demonstration
 
