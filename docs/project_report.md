@@ -230,6 +230,17 @@ Both runs produced 9 allow, 10 block and 1 review decisions. The review was caus
 
 ### Burst detection and throttling experiment
 
+The burst test (`python -m backend.tests.burst_experiment`, see the [developer guide](developer-guide.md#burst-detection-experiment)) ran against the full Compose stack with the default settings: a threshold of 10 prompts in a 60-second window and a 300-second cooldown. A control IP first sent 5 prompts at 1 per second. Then a simulated attacker IP sent 20 prompts at 10 per second, about 2 seconds in total. The prompts were short calculator and course questions. The following is a summary of the results:
+
+| Source | Sent | P10 allowed | P10 blocked | First blocked prompt | Final blocks with a throttle reason | Mean P10 latency (ms) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Control (1 prompt/s) | 5 | 5 | 0 | – | 0 | 275.59 |
+| Attacker (10 prompts/s) | 20 | 9 | 11 | 10 | 11 | 233.09 |
+
+P9 counted the attacker's prompts 1–9 in its window, and P10 allowed them. At prompt 10 the count reached the threshold: P9 detected the burst, and P10 blocked the source until 300 seconds after that prompt. Prompts 11–20 were blocked as `source_blocked` under the same block, and P7 finalized all 11 throttled prompts as `block` with a throttle reason. The control source was never throttled. All five automated checks passed. The control's mean latency includes a first-prompt outlier of 955 ms; its other prompts took 79–128 ms.
+
+The run also showed P4 false positives. Of the 14 prompts that P10 allowed, P7 blocked 7 and sent 6 to review on the model score; only one was allowed. Simple questions such as "What is 12 times 7?" scored above the block threshold. This does not affect the throttling result, because P7's reason separates throttle blocks from score blocks, but it suggests the classifier is too strict on short benign prompts. This run shows the behaviour at one burst rate and one threshold; it does not measure the maximum rate P9/P10 can handle.
+
 ### Retraining before and after
 
 ### Guarded versus unguarded agent demonstration

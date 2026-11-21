@@ -19,6 +19,7 @@ Host-side Python commands use the relevant runtime or batch environment; full Co
 - [Dataset replay](#dataset-replay)
 - [Agent](#agent)
 - [Database and batch data](#database-and-batch-data)
+- [Burst detection experiment](#burst-detection-experiment)
 - [Dashboards](#dashboards)
 - [Checks](#checks)
 
@@ -583,6 +584,51 @@ docker compose --env-file .env -f backend/compose.yaml exec -T consumer python -
 docker compose --env-file .env -f backend/compose.yaml cp consumer:/app/guard_latency_summary.csv .
 ```
 
+## Burst detection experiment
+
+With the guard services running (burst worker, consumer and router), run from the project root:
+
+```sh
+python -m backend.tests.burst_experiment
+```
+
+A control source first sends 5 prompts at 1 per second. Then an attacker source sends 20 prompts
+at 10 per second, about 2 seconds in total, well inside the 60-second P9 window. Both use simulated
+documentation IPs (`198.51.100.10` and `198.51.100.66`) prefixed with a per-run ID, so a cooldown
+left over from an earlier run cannot affect a new one. The prompts are short calculator and course
+questions; the final P7 reason shows whether a block came from throttling (`throttle_*`) or from the model score.
+
+| Option | Meaning |
+|---|---|
+| `--count`, `--rate` | Attacker prompts and prompts/second; defaults 20 and 10 |
+| `--control-count`, `--control-rate` | Control prompts and prompts/second; defaults 5 and 1 |
+| `--timeout` | Seconds to wait for P10 and P7 decisions after sending; default 60 |
+| `--output-dir` | Where to write the CSV files; default `results/` |
+
+The script waits until every prompt has a `throttle_decisions` row and a final `guard_results`
+decision. It reads the threshold, window and cooldown from the stored rows, so it also works with
+non-default `BURST_*` settings. It then prints PASS/FAIL for five checks and exits with 1 if any fails:
+
+1. Attacker prompts 1 to threshold−1 are P10 `allow`, with P9 `window_count` 1 to threshold−1.
+2. Attacker prompt number `threshold` is `block` / `burst_detected` with `burst_started` true.
+3. Every later attacker prompt is `block` / `source_blocked` with the same `blocked_until`.
+4. P7 finalizes every P10-blocked prompt as `block` with a `throttle_*` reason.
+5. No control prompt is throttled.
+
+It writes `results/burst_experiment_prompts.csv` (one row per prompt: P9 window count, P10 action,
+reason and latency, P7 decision and reason, P4 score) and `results/burst_experiment_summary.csv`
+(one row per source), and prints both as tables. Running it again replaces both files.
+Allowed prompts follow the normal agent path if the agent worker is running.
+Like the latency benchmark, it is run manually and is not picked up by `test_*.py` discovery.
+
+To run inside Docker, copy the script into the consumer container and export the results:
+
+```sh
+docker compose --env-file .env -f backend/compose.yaml cp backend/tests/burst_experiment.py consumer:/app/backend/tests/burst_experiment.py
+docker compose --env-file .env -f backend/compose.yaml exec -T consumer python -m backend.tests.burst_experiment --output-dir /app/burst_results
+docker compose --env-file .env -f backend/compose.yaml cp consumer:/app/burst_results/burst_experiment_prompts.csv results/
+docker compose --env-file .env -f backend/compose.yaml cp consumer:/app/burst_results/burst_experiment_summary.csv results/
+```
 ## Dashboards
 
 Compose starts the Streamlit dashboard with the rest of the stack. Open <http://127.0.0.1:8501>.
