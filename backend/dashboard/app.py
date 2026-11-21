@@ -36,7 +36,9 @@ pages = {
     "Blendi (P1–P2)": [placeholder("Blendi", "P1–P2 ingestion and IP join", "blendi")],
     "Emma (P3–P4)": [placeholder("Emma", "P3–P4 similarity and classification", "emma")],
     "Francesca (P5–P6)": [placeholder("Francesca", "P5–P6 anomaly and drift", "francesca")],
-    "Shahed (P7–P8)": [placeholder("Shahed", "P7–P8 routing and Top-10", "shahed")],
+    "Shahed (P7–P8)": [
+        st.Page("views/shahed_attack_patterns.py", title="Attack patterns & decisions", url_path="shahed-attack-patterns")
+    ],
     "Nándor (P9–P10)": [
         st.Page("views/nandor_burst.py", title="Burst detection & throttling", url_path="nandor-burst"),
         st.Page("views/nandor_agent_tools.py", title="Agent tool use", url_path="nandor-agent-tools"),
