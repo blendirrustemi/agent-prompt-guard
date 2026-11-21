@@ -165,6 +165,26 @@ services:
     restart: unless-stopped
     stop_grace_period: 20s
 
+  # Streamlit dashboards for every team member, reading PostgreSQL: http://127.0.0.1:8501
+  dashboard:
+    <<: *python
+    command: ["python", "-m", "streamlit", "run", "backend/dashboard/app.py",
+              "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true",
+              "--browser.gatherUsageStats=false"]
+    environment:
+      DATABASE_URL: postgresql://pijd:pijd@db:5432/pijd
+    ports:
+      - "127.0.0.1:8501:8501"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   db:
     image: postgres:16
     environment:

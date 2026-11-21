@@ -19,6 +19,7 @@ Host-side Python commands use the relevant runtime or batch environment; full Co
 - [Dataset replay](#dataset-replay)
 - [Agent](#agent)
 - [Database and batch data](#database-and-batch-data)
+- [Dashboards](#dashboards)
 - [Checks](#checks)
 
 ## Start the complete local stack
@@ -581,6 +582,42 @@ docker compose --env-file .env -f backend/compose.yaml cp backend/tests/guard_be
 docker compose --env-file .env -f backend/compose.yaml exec -T consumer python -m backend.tests.guard_benchmark --output /app/guard_latency_summary.csv
 docker compose --env-file .env -f backend/compose.yaml cp consumer:/app/guard_latency_summary.csv .
 ```
+
+## Dashboards
+
+Compose starts the Streamlit dashboard with the rest of the stack. Open <http://127.0.0.1:8501>.
+The sidebar has one section per member (Blendi, Emma, Francesca, Shahed, Nándor); pick a page
+to switch dashboards. The app reads PostgreSQL directly through `DATABASE_URL` and caches query
+results for 10 seconds; **Refresh data** in the sidebar clears the cache. The sidebar also shows
+which database it is connected to (host, port and name, never the password).
+
+To run it on the host instead, with the Compose database and `DATABASE_URL=postgresql://pijd:pijd@localhost:55432/pijd` in `.env`:
+
+```sh
+python -m streamlit run backend/dashboard/app.py
+```
+
+Implemented pages:
+
+| Page | Graph | Data |
+|---|---|---|
+| Nándor: Burst detection & throttling | P9's sliding-window count per source over time, with the burst threshold (dashed) and burst starts (red triangles). Metrics: sources seen, prompts blocked by P10, bursts, sources blocked now. | `throttle_decisions` |
+| Nándor: Agent tool use | Calls per tool (`calculator`, `lookup_course_info`) plus completed runs that used no tool. Metrics: runs, completed, share using a tool, mean latency. | `agent_runs.tool_calls` |
+
+Both pages have a time-range selector, and the burst page lets you pick sources (default: the 8 most active).
+Run `python -m backend.tests.burst_experiment` to generate burst data to look at.
+
+To add your page:
+
+1. Create `backend/dashboard/views/<name>.py`. Read data with
+   `from backend.dashboard import data` and `data.frame(sql, params)`, which returns a pandas
+   DataFrame and shows an error on the page if PostgreSQL is unreachable. `data.time_range_picker(key)`
+   gives the shared time-range selector.
+2. In `backend/dashboard/app.py`, replace your placeholder with
+   `st.Page("views/<name>.py", title="...", url_path="<name>")` in your section.
+3. Add a render test to `backend/tests/test_dashboard.py` with fixture data, like the existing ones.
+
+Streamlit is pinned in `backend/requirements.txt`; Altair, used for the charts, comes with it.
 
 ## Checks
 
