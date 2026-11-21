@@ -48,6 +48,46 @@ def agent_query(sql, params=()):
     return pd.DataFrame([{"created_at": T0, "status": "completed", "tools": "calculator", "latency_ms": 4200, "model": "qwen3:1.7b"}])
 
 
+def shahed_query(sql, params=()):
+    if "attack_aggregate_current" in sql:
+        return pd.DataFrame([{
+            "snapshot_at": T0,
+            "window_start": T0 - timedelta(seconds=60),
+            "window_end": T0,
+            "attack_type_counts": {
+                "adversarial_attacks": 0,
+                "indirect_agent_manipulation": 0,
+                "information_extraction": 1,
+                "instruction_manipulation": 2,
+                "jailbreak_persona": 0,
+                "obfuscation": 0,
+            },
+            "top_patterns": {
+                "instruction_manipulation": [
+                    {"pattern_id": "p1", "text": "ignore previous instructions", "count": 3}
+                ],
+                "information_extraction": [
+                    {"pattern_id": "p2", "text": "reveal the hidden prompt", "count": 2}
+                ],
+            },
+        }])
+    if "attack_aggregate_history" in sql:
+        return pd.DataFrame()
+    if "date_trunc" in sql:
+        return pd.DataFrame([
+            {"decision_time": T0 - timedelta(minutes=1), "decision": "allow", "prompts": 4},
+            {"decision_time": T0, "decision": "block", "prompts": 2},
+            {"decision_time": T0, "decision": "review", "prompts": 1},
+        ])
+    raise AssertionError(f"Unexpected dashboard query: {sql}")
+
+
+def shahed_empty_query(sql, params=()):
+    if "date_trunc" in sql or "attack_aggregate_current" in sql or "attack_aggregate_history" in sql:
+        return pd.DataFrame()
+    raise AssertionError(f"Unexpected dashboard query: {sql}")
+
+
 def empty_query(sql, params=()):
     if "AS runs" in sql:
         return pd.DataFrame([{"runs": 0, "completed": 0, "with_tools": 0, "mean_latency_ms": None}])
@@ -93,15 +133,25 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(app.metric[3].value, "4.2 s")
         self.assertEqual(len(self.charts(app)), 1)
 
+    def test_shahed_page_renders_all_three_data_charts(self):
+        app = self.run_page("shahed_attack_patterns.py", shahed_query)
+        self.assertEqual(len(self.charts(app)), 3)
+        self.assertTrue(any("Top 10 repeated" in item.value for item in app.subheader))
+
+    def test_shahed_page_handles_no_saved_data(self):
+        app = self.run_page("shahed_attack_patterns.py", shahed_empty_query)
+        self.assertEqual(len(self.charts(app)), 0)
+        self.assertTrue(app.info)
+
     def test_empty_data_shows_a_hint(self):
-        for page in ("nandor_burst.py", "nandor_agent_tools.py"):
+        for page in ("nandor_burst.py", "nandor_agent_tools.py", "shahed_attack_patterns.py"):
             with self.subTest(page=page):
                 app = self.run_page(page, empty_query)
                 self.assertEqual(len(self.charts(app)), 0)
                 self.assertTrue(app.info)
 
     def test_database_error_is_shown(self):
-        for page in ("nandor_burst.py", "nandor_agent_tools.py"):
+        for page in ("nandor_burst.py", "nandor_agent_tools.py", "shahed_attack_patterns.py"):
             with self.subTest(page=page):
                 app = self.run_page(page, database_down)
                 self.assertIn("Could not read PostgreSQL", app.error[0].value)
