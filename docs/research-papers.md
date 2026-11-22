@@ -65,3 +65,23 @@ Formalizes sliding-window stream queries, including Top-K frequency queries. Tha
 **Source:** [IEEE Xplore](https://doi.org/10.1109/TKDE.2018.2876857).
 
 This paper reviews concept-drift detection and adaptation methods, including model retraining. Their survey gives context for the Batch 4 before-and-after comparison. In this project, we launch Batch 4 manually on reviewed labels, and drift alerts do not trigger retraining automatically.
+
+## 7. Efficient Elastic Burst Detection in Data Streams (2003)
+
+**Authors:** Yunyue Zhu and Dennis Shasha.
+
+**Venue:** *Proceedings of the Ninth ACM SIGKDD International Conference on Knowledge Discovery and Data Mining (KDD '03)*, pp. 336–345.
+
+**Source:** [ACM Digital Library](https://doi.org/10.1145/956750.956789).
+
+Defines elastic bursts: a stream is monitored over several sliding-window sizes at once, each with its own threshold, and a burst is reported whenever any window's aggregate reaches its threshold. This is the basis for P9's three windows per source (10 s/6, 60 s/10 and 600 s/40 prompts): the short window catches sharp floods early, and the long window catches slow, steady sources that never exceed the per-minute limit.
+
+## 8. ReAct: Synergizing Reasoning and Acting in Language Models (2023)
+
+**Authors:** Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak Shafran, Karthik Narasimhan, and Yuan Cao.
+
+**Venue:** *International Conference on Learning Representations (ICLR 2023)*.
+
+**Source:** [arXiv:2210.03629](https://arxiv.org/abs/2210.03629).
+
+Introduces agents that interleave reasoning with actions, such as tool or API calls, and use each result to decide the next step. Acting on looked-up information reduces hallucination. Our agent follows this loop: LangChain's `create_agent` lets the model call `calculator` or `lookup_course_info`, reads the result, and continues until it can answer. The agent tool-use dashboard counts these actions per tool. 

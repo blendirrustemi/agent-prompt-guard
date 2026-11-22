@@ -75,8 +75,8 @@ services:
     environment:
       DATABASE_URL: postgresql://pijd:pijd@db:5432/pijd
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      BURST_WINDOW_SECONDS: ${BURST_WINDOW_SECONDS:-60}
-      BURST_THRESHOLD: ${BURST_THRESHOLD:-10}
+      # P9 elastic windows, seconds:threshold (Zhu & Shasha, KDD 2003).
+      BURST_WINDOWS: ${BURST_WINDOWS:-10:6,60:10,600:40}
       BURST_COOLDOWN_SECONDS: ${BURST_COOLDOWN_SECONDS:-300}
     healthcheck:
       test: ["CMD", "python", "-c", "from pathlib import Path; assert Path('/tmp/pijd-burst-ready').exists()"]

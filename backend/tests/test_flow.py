@@ -188,7 +188,7 @@ class KafkaFlowTests(FlowFixtures, unittest.TestCase):
                 scorer = make_scorer(score, tokens=tokens)
                 scorer.now = lambda: datetime.now(timezone.utc)
                 process_message(self.consumer, raw, self.url, SourceContextCache(self.url), scorer)
-                process_burst(self.consumer, producer, raw, self.url, BurstDetector(threshold=threshold), RateLimiter())
+                process_burst(self.consumer, producer, raw, self.url, BurstDetector(((60, threshold),)), RateLimiter())
                 throttle = self.receive("throttle_decisions", prompt_id)
                 process_throttle_message(self.consumer, throttle, self.url)
                 route_ready_prompts(self.url, allow_max=0.3, block_min=0.7, score_timeout_seconds=30)

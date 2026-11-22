@@ -25,7 +25,7 @@ NOW = datetime(2026, 11, 11, 12, tzinfo=timezone.utc)
 def throttle_event(prompt_id, action="allow", decided_at=NOW, reason=None):
     blocked = action == "block"
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "prompt_id": prompt_id,
         "source": "source_01",
         "action": action,
@@ -33,6 +33,7 @@ def throttle_event(prompt_id, action="allow", decided_at=NOW, reason=None):
         "window_count": 1,
         "window_seconds": 60,
         "threshold": 10,
+        "windows": [{"seconds": 60, "count": 1, "threshold": 10}],
         "blocked_until": (NOW + timedelta(minutes=5)).isoformat() if blocked else None,
         "burst_started": blocked and reason == "burst_detected",
         "event_time": NOW.isoformat(),
@@ -178,7 +179,7 @@ class RouterStorageTests(unittest.TestCase):
         allow = build_throttle_event(type("D", (), {
             "prompt_id": prompt_id, "source": "source_router_test", "action": "allow", "reason": None,
             "window_count": 1, "window_seconds": 60, "threshold": 10, "blocked_until": None,
-            "burst_started": False, "event_time": NOW,
+            "burst_started": False, "event_time": NOW, "windows": (),
         })(), decided_at=NOW)
         db.save_throttle_decision(self.url, {field: allow[field] for field in db.THROTTLE_FIELDS})
         ready = db.get_pending_routes(self.url, ready_before=NOW - timedelta(seconds=30))

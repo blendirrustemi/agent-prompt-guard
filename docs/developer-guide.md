@@ -292,6 +292,14 @@ The encoder and Batch 3 attack-type classifier are unchanged.
 The `burst` service (`python -m backend.stream.burst_worker`, group `pijd-burst-v1`) reads `prompts_raw` beside the intake consumer.
 For window and cooldown behaviour, see [P9/P10 in the report](project_report.md#p9p10-burst-detection-and-rate-limiting).
 
+P9 uses elastic bursts ([Zhu & Shasha, 2003](https://doi.org/10.1145/956750.956789)): several window
+sizes, each with its own threshold. Configure them with `BURST_WINDOWS` as comma-separated
+`seconds:threshold` pairs, shortest first, with thresholds increasing (default `10:6,60:10,600:40`).
+A source is blocked for `BURST_COOLDOWN_SECONDS` (default 300) as soon as any window reaches its
+threshold. A malformed value stops the worker at startup with an error. The old
+`BURST_WINDOW_SECONDS` and `BURST_THRESHOLD` settings are no longer read; `BURST_WINDOWS=60:10`
+reproduces the previous single-window behaviour.
+
 For every prompt the worker stores one row in the `throttle_decisions` table, publishes the same
 decision to the `throttle_decisions` topic (keyed by `prompt_id`), then commits its offset.
 P7 consumes each event: `action: "block"` overrides classifier routing immediately, while
@@ -299,24 +307,32 @@ P7 consumes each event: `action: "block"` overrides classifier routing immediate
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "prompt_id": "UUID",
   "source": "source_01",
   "action": "block",
   "reason": "burst_detected",
-  "window_count": 10,
-  "window_seconds": 60,
-  "threshold": 10,
-  "blocked_until": "2026-11-10T12:05:09+00:00",
+  "window_count": 6,
+  "window_seconds": 10,
+  "threshold": 6,
+  "windows": [
+    {"seconds": 10, "count": 6, "threshold": 6},
+    {"seconds": 60, "count": 6, "threshold": 10},
+    {"seconds": 600, "count": 6, "threshold": 40}
+  ],
+  "blocked_until": "2026-11-10T12:05:00.500000+00:00",
   "burst_started": true,
-  "event_time": "2026-11-10T12:00:09+00:00",
-  "decided_at": "2026-11-10T12:00:09.120000+00:00"
+  "event_time": "2026-11-10T12:00:00.500000+00:00",
+  "decided_at": "2026-11-10T12:00:00.620000+00:00"
 }
 ```
 
 `action` is `allow` (`reason` and `blocked_until` null) or `block`, with `reason` set to
 `burst_detected` on the prompt that starts a block (`burst_started: true`, a burst alert) or
-`source_blocked` during the cooldown. Redelivery republishes the stored decision unchanged.
+`source_blocked` during the cooldown. `windows` lists the source's count in every P9 window, shortest
+first. `window_count`/`window_seconds`/`threshold` repeat the **deciding window**: the shortest window
+that reached its threshold, or otherwise the one closest to it (highest count/threshold). Version-one
+events (no `windows`) are still accepted and read as a single window. Redelivery republishes the stored decision unchanged.
 Active blocks are reloaded from PostgreSQL when the worker restarts.
 
 ## Decision routing and attack aggregation (P7/P8)
@@ -348,7 +364,7 @@ Trigger a burst and inspect it (in PowerShell, pipe 12 lines the same way):
 
 ```sh
 seq 12 | sed 's/^/Burst prompt /' | python -m backend.intake.producer --source source_01
-docker compose --env-file .env -f backend/compose.yaml exec db psql -U pijd -d pijd -c "SELECT source, action, reason, window_count, burst_started FROM throttle_decisions ORDER BY event_time"
+docker compose --env-file .env -f backend/compose.yaml exec db psql -U pijd -d pijd -c "SELECT source, action, reason, window_seconds, window_count, windows, burst_started FROM throttle_decisions ORDER BY event_time"
 docker compose --env-file .env -f backend/compose.yaml exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:9092 --topic throttle_decisions --from-beginning --timeout-ms 5000
 ```
 
@@ -593,7 +609,7 @@ python -m backend.tests.burst_experiment
 ```
 
 A control source first sends 5 prompts at 1 per second. Then an attacker source sends 20 prompts
-at 10 per second, about 2 seconds in total, well inside the 60-second P9 window. Both use simulated
+at 10 per second, about 2 seconds in total, well inside even the shortest (10-second) P9 window. Both use simulated
 documentation IPs (`198.51.100.10` and `198.51.100.66`) prefixed with a per-run ID, so a cooldown
 left over from an earlier run cannot affect a new one. The prompts are short calculator and course
 questions; the final P7 reason shows whether a block came from throttling (`throttle_*`) or from the model score.
@@ -606,16 +622,18 @@ questions; the final P7 reason shows whether a block came from throttling (`thro
 | `--output-dir` | Where to write the CSV files; default `results/` |
 
 The script waits until every prompt has a `throttle_decisions` row and a final `guard_results`
-decision. It reads the threshold, window and cooldown from the stored rows, so it also works with
-non-default `BURST_*` settings. It then prints PASS/FAIL for five checks and exits with 1 if any fails:
+decision. It takes the trigger prompt, the window that fired, its threshold and the cooldown from the
+stored rows, so it also works with non-default `BURST_*` settings. It then prints PASS/FAIL for five
+checks and exits with 1 if any fails. With the default windows, the trigger is prompt 6 (10 s window):
 
-1. Attacker prompts 1 to threshold−1 are P10 `allow`, with P9 `window_count` 1 to threshold−1.
-2. Attacker prompt number `threshold` is `block` / `burst_detected` with `burst_started` true.
+1. Attacker prompts before the trigger are P10 `allow`, and every P9 window counts each of them (count = prompt number).
+2. The trigger prompt is `block` / `burst_detected` with `burst_started` true, and the window that fired has reached its threshold.
 3. Every later attacker prompt is `block` / `source_blocked` with the same `blocked_until`.
 4. P7 finalizes every P10-blocked prompt as `block` with a `throttle_*` reason.
 5. No control prompt is throttled.
 
-It writes `results/burst_experiment_prompts.csv` (one row per prompt: P9 window count, P10 action,
+It writes `results/burst_experiment_prompts.csv` (one row per prompt: the count in every P9 window
+(`p9_count_10s`, `p9_count_60s`, `p9_count_600s`), the deciding window, P10 action,
 reason and latency, P7 decision and reason, P4 score) and `results/burst_experiment_summary.csv`
 (one row per source), and prints both as tables. Running it again replaces both files.
 Allowed prompts follow the normal agent path if the agent worker is running.
@@ -647,7 +665,7 @@ Implemented pages:
 
 | Page | Graph | Data |
 |---|---|---|
-| Nándor: Burst detection & throttling | P9's sliding-window count per source over time, with the burst threshold (dashed) and burst starts (red triangles). Metrics: sources seen, prompts blocked by P10, bursts, sources blocked now. | `throttle_decisions` |
+| Nándor: Burst detection & throttling | P9's count per source over time in one elastic window (a **P9 window** selector switches between 10, 60 and 600 s), with that window's threshold (dashed) and burst starts (red triangles; the tooltip says which window fired). Metrics: sources seen, prompts blocked by P10, bursts, sources blocked now. | `throttle_decisions` (`windows`) |
 | Nándor: Agent tool use | Calls per tool (`calculator`, `lookup_course_info`) plus completed runs that used no tool. Metrics: runs, completed, share using a tool, mean latency. | `agent_runs.tool_calls` |
 
 Both pages have a time-range selector, and the burst page lets you pick sources (default: the 8 most active).
