@@ -63,11 +63,9 @@ Batch 3 achieved a macro-F1 of 0.76 on the NeurAlchemy test split. During stream
 
 #### Batch 4: reviewed-label retraining
 
-Batch 4 is an explicit offline command using reviewed benign/malicious labels supplied as a CSV, with rows assigned to training or validation.
-Both splits must contain both labels; validation rows are never used to fit the candidate.
-The repository does not currently collect these labels in a review UI.
-Promotion replaces the active Batch 2 classifier only if the candidate's validation macro-F1 is strictly higher than the current classifier's score on the same labelled validation rows.
-The encoder and B3 classifier remain unchanged; P6 alerts request human consideration rather than automatically running or promoting B4.
+Batch 4 is an explicit offline command using reviewed benign/malicious labels supplied as a CSV, with rows assigned to training or validation. This follows a model-update pattern in which expert feedback is incorporated as labelled data and used to retrain a supervised model; the CSV workflow and promotion rule here are project-specific choices ([Chen et al., 2023](https://doi.org/10.1016/j.patter.2023.100780)).
+
+Both splits must contain both labels; validation rows are never used to fit the candidate. The repository does not currently collect these labels in a review UI. Promotion replaces the active Batch 2 classifier only if the candidate's validation macro-F1 is strictly higher than the current classifier's score on the same labelled validation rows. The encoder and B3 classifier remain unchanged; P6 alerts request human consideration rather than automatically running or promoting B4.
 
 Batch 4 was trained using the repository's reviewed-label CSV, which had 140 rows (70 per label) and validated on 60 rows (30 per label). The existing classifier scored a macro-F1 of 0,6011, while the candidate scored 0.8496 on the same validation split. Additionally, the existing model produced the confusion matrix `[[9, 21], [0, 30]]`, and the candidate produced `[[24, 6], [3, 27]]` with true labels as rows and predicted labels as columns (benign, malicious). The candidate strictly improved over the baseline, so the pipeline promoted it and saved the run report, previous classifier, and previous config under `backend/batch/models/batch4_runs/promoted_20261121T121133Z/`. This validation result applies only to the reviewed sample and does not replace untouched test or external evaluation.
 Operational instructions are in the [developer guide](developer-guide.md#batch-4-reviewed-label-retraining).
@@ -110,26 +108,17 @@ P4 stores the probability, predicted attack family, model version, token coverag
 
 ### P5 streaming anomaly detection
 
-P5 runs in the intake consumer after P4 and uses River Half-Space Trees over seven bounded numeric
-features: normalized P1 character and word counts, symbol ratio, normalized P3 cosine similarity,
-P3 availability, P4 malicious probability, and P4 availability. Counts are divided by the 8,000
-character input limit; cosine similarity is mapped from `[-1, 1]` to `[0, 1]`. Missing P3/P4
-signals use zero plus an availability flag. HST receives fixed `[0, 1]` feature limits.
+P5 adds an unsupervised, per-prompt anomaly score to the stream. It runs in the intake consumer after P4 and uses River's Half-Space Trees implementation. A comparative study of online anomaly detectors includes HST/F among tree-based methods and analyzes accuracy and efficiency trade-offs across data characteristics ([Ntroumpogiannis et al., 2023](https://doi.org/10.1007/s00778-022-00773-x)); River provides the streaming-learning implementation used here ([Montiel et al., 2021](https://www.jmlr.org/papers/v22/20-1380.html)).
 
-The detector uses 10 trees, height 8, window size 250, and seed 42. It scores before learning from
-each prompt. The first 250 observations have `p5_status = 'warming_up'` and no anomaly score; later
-rows have `p5_status = 'scored'`. A higher HST score indicates more unusual behavior, not a malicious
-verdict. P5 is informational and does not affect P7 routing.
+P5 operates over seven bounded numeric features: normalized P1 character and word counts, symbol ratio, normalized P3 cosine similarity, P3 availability, P4 malicious probability, and P4 availability. Counts are divided by the 8,000-character input limit; cosine similarity is mapped from `[-1, 1]` to `[0, 1]`. Missing P3/P4 signals use zero plus an availability flag. HST receives fixed `[0, 1]` feature limits. The current configuration has 10 trees, height 8, window size 250, and random seed 42.
+
+For each prompt, P5 scores before learning from that prompt, then updates its streaming state. Its first 250 observations are warm-up and stored with `p5_status = 'warming_up'` and no anomaly score; later prompts receive `p5_status = 'scored'`. The score describes how unusual the feature combination is relative to the stream. It is not a probability of attack and does not establish malicious intent. P5 is persisted for analysis but is informational: it does not alter P4's score or P7's allow/block/review decision. The HST method is a choice for online anomaly scoring; our seven-feature adaptation and parameter settings are project implementation choices, not claims that the original paper evaluated prompt injection.
 
 ### P6 score drift monitoring
 
-The separate `drift` worker watches successfully stored P4 malicious probabilities in
-`guard_results`. It polls scores in completion order and feeds them to River ADWIN
-(default `P6_ADWIN_DELTA=0.002`). A detected distribution change emits a
-`P6 RETRAINING ALERT` warning in the worker logs. This is an alert for a human to
-review labelled feedback and consider Batch 4; P6 does not retrain or replace a model.
+While P5 flags an individual prompt that looks unusual, P6 looks for a change over time in the stream of P4 malicious probabilities. A separate `drift` worker reads successfully persisted scores from `guard_results` in scoring-completion order and feeds the probabilities (values from 0 to 1) to River's ADWIN detector. Research examines ADWIN's adaptive-window drift detection and scaling for high-velocity streams ([Grulich et al., 2018](https://doi.org/10.5441/002/edbt.2018.51)); River is the streaming-learning library used by this implementation ([Montiel et al., 2021](https://www.jmlr.org/papers/v22/20-1380.html)). The worker uses `P6_ADWIN_DELTA=0.002` by default, with a one-second polling interval and a 500-row batch size.
 
-P6 monitors score distribution, not classification correctness or prompt content.
+When ADWIN reports a change, P6 writes a `P6 RETRAINING ALERT` warning to the worker log. The alert means the distribution of model scores may have shifted; it does not prove that attack prevalence rose or that P4 became less accurate. P6 has no ground-truth labels with which to assess correctness. It neither routes individual prompts nor collects labels, starts retraining, or promotes a classifier. The intended response is for a person to inspect the shift and review/label suitable live prompts; those labels may then be supplied to the separate Batch 4 workflow.
 
 ### P7/P8: decision routing and attack aggregation
 
@@ -250,6 +239,18 @@ Both runs produced 9 allow, 10 block and 1 review decisions. The review was caus
 
 ### Drift detection experiment
 
+P6 was evaluated with a three-phase replay of the Neuralchemy test split: 150 benign prompts for baseline, 150 more benign prompts for control, then 150 malicious prompts to shift the score stream. Replays ran at 5 prompts/s across 40 simulated sources to avoid source rate limiting. P6 used ADWIN with delta 0.002. Phase means below use valid persisted P4 malicious scores, the values P6 monitors.
+
+| Phase | Label | Prompts | Valid P4 scores | Mean score | Standard deviation | New alerts |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Baseline | Benign | 150 | 150 | 0.2796* | - | 0 |
+| Control | Benign | 150 | 150 | 0.2796* | - | 0 |
+| Distribution shift | Malicious | 150 | 143 | 0.4324 | 0.1341 | 1 |
+
+*Baseline and control combined: 300 valid scores, mean 0.2796 and standard deviation 0.1008. The shift mean was about 54.6% higher. No new alert fired during either benign phase.
+
+P6 detected the shift at 12:39:25.822 UTC, 19.2 seconds after the first shifted P4 score at 12:39:06.632 UTC. ADWIN reported a window width of 349 and estimated mean of 0.3222; the detection was persisted in PostgreSQL. Seven shifted prompts were marked for review because they were truncated and therefore had no P4 malicious score; they were excluded from the score statistics and ADWIN input. This controlled run demonstrates detection of this score-distribution change, not reduced model accuracy or a general false-alarm rate.
+
 ### Burst detection and throttling experiment
 
 The burst test (`python -m backend.tests.burst_experiment`, see the [developer guide](developer-guide.md#burst-detection-experiment)) ran against the full Compose stack with the default settings: the elastic windows of [Zhu & Shasha (2003)](https://doi.org/10.1145/956750.956789) with 6 prompts in 10 seconds, 10 in 60 seconds and 40 in 600 seconds, and a 300-second cooldown. A control IP first sent 5 prompts at 1 per second. Then a simulated attacker IP sent 20 prompts at 10 per second, about 2 seconds in total. The prompts were short calculator and course questions. The following is a summary of the results:
@@ -265,9 +266,21 @@ All prompts fell inside every window, so all three windows counted the attacker'
 
 [Batch 4: reviewed-label retraining](#batch-4-reviewed-label-retraining) reports the validation metrics and confusion matrices for the current and candidate models. The candidate strictly improved macro-F1 and was promoted, though its validation score is not an untouched test result.
 
-When data distributions change, concept-drift research treats retraining as one way to adapt ([Lu et al., 2019](https://doi.org/10.1109/TKDE.2018.2876857)),, which gives context for comparing the reviewed-label candidate with the active model. In this project, Batch 4 was run manually on reviewed data. P6's score-distribution alert does not trigger retraining automatically, and the strict macro-F1 promotion rule is our own selection policy.
+When data distributions change, concept-drift research treats retraining as one way to adapt ([Lu et al., 2019](https://doi.org/10.1109/TKDE.2018.2876857)), which gives context for comparing the reviewed-label candidate with the active model. In this project, Batch 4 was run manually on reviewed data. P6's score-distribution alert does not trigger retraining automatically, and the strict macro-F1 promotion rule is our own selection policy.
 
 
 ### Guarded versus unguarded agent demonstration
 
 ### Dashboard evaluation
+
+## References
+
+- Alzahrani, A. (2026). PromptGuard: A structured framework for injection-resilient language models. *Scientific Reports, 16*, 1277. [https://doi.org/10.1038/s41598-025-31086-y](https://doi.org/10.1038/s41598-025-31086-y)
+- Chen, V., Bhatt, U., Heidari, H., Weller, A., & Talwalkar, A. (2023). Perspectives on incorporating expert feedback into model updates. *Patterns, 4*(7), 100780. [https://doi.org/10.1016/j.patter.2023.100780](https://doi.org/10.1016/j.patter.2023.100780)
+- Galinkin, E., & Sablotny, J. (2024). Improved large language model jailbreak detection via pretrained embeddings. arXiv:2412.01547. [https://arxiv.org/abs/2412.01547](https://arxiv.org/abs/2412.01547)
+- Gou, X., Zhang, Y., Hu, Z., He, L., Wang, K., Liu, X., Yang, T., Wang, Y., & Cui, B. (2023). A sketch framework for approximate data stream processing in sliding windows. *IEEE Transactions on Knowledge and Data Engineering, 35*(5), 4411–4424. [https://doi.org/10.1109/TKDE.2022.3151140](https://doi.org/10.1109/TKDE.2022.3151140)
+- Grulich, P., Saitenmacher, R., Traub, J., Breß, S., Rabl, T., & Markl, V. (2018). Scalable detection of concept drifts on data streams with parallel adaptive windowing. In *Proceedings of the 21st International Conference on Extending Database Technology* (pp. 477–480). [https://doi.org/10.5441/002/edbt.2018.51](https://doi.org/10.5441/002/edbt.2018.51)
+- Lu, J., Liu, A., Dong, F., Gu, F., Gama, J., & Zhang, G. (2019). Learning under concept drift: A review. *IEEE Transactions on Knowledge and Data Engineering, 31*(12), 2346–2363. [https://doi.org/10.1109/TKDE.2018.2876857](https://doi.org/10.1109/TKDE.2018.2876857)
+- Montiel, J., Read, J., Bifet, A., & Abdessalem, T. (2021). River: Machine learning for streaming data in Python. *Journal of Machine Learning Research, 22*(110), 1–8. [https://www.jmlr.org/papers/v22/20-1380.html](https://www.jmlr.org/papers/v22/20-1380.html)
+- Ntroumpogiannis, A., Giannoulis, M., Myrtakis, N., Christophides, V., Simon, E., & Tsamardinos, I. (2023). A meta-level analysis of online anomaly detectors. *The VLDB Journal, 32*(4), 845–886. [https://doi.org/10.1007/s00778-022-00773-x](https://doi.org/10.1007/s00778-022-00773-x)
+- Rebedea, T., Dinu, R., Sreedhar, M. N., Parisien, C., & Cohen, J. (2023). NeMo Guardrails: A toolkit for controllable and safe LLM applications with programmable rails. In *Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing: System Demonstrations* (pp. 431–445). [https://doi.org/10.18653/v1/2023.emnlp-demo.40](https://doi.org/10.18653/v1/2023.emnlp-demo.40)

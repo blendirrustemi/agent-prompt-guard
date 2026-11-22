@@ -31,6 +31,13 @@ def run_once(database_url, detector, cursor, *, batch_size=500):
         detector.update(score)
         cursor = (row["scored_at"], row["prompt_id"])
         if detector.drift_detected:
+            db.save_p6_drift_alert(
+                database_url,
+                cursor[0],
+                cursor[1],
+                detector.width,
+                detector.estimation,
+            )
             LOGGER.warning(
                 "P6 RETRAINING ALERT: P4 malicious-score distribution drift detected "
                 "(samples=%d, latest_mean=%.4f, model_data_score_only=true)",
