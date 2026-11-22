@@ -133,5 +133,18 @@ CREATE INDEX IF NOT EXISTS guard_results_p5_rebuild_idx
     ON guard_results (p5_feature_version, p5_sequence DESC) WHERE p5_sequence IS NOT NULL;
 CREATE INDEX IF NOT EXISTS guard_results_p6_scores_idx
     ON guard_results (scored_at, prompt_id) WHERE malicious_score IS NOT NULL;
+
+-- P6 ADWIN detections are durable and keyed by the score that triggered them,
+-- so replaying scores after a worker restart does not duplicate alerts.
+CREATE TABLE IF NOT EXISTS p6_drift_alerts (
+    scored_at TIMESTAMPTZ NOT NULL,
+    prompt_id UUID NOT NULL REFERENCES prompts(id) ON DELETE CASCADE,
+    detected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    detector_width BIGINT NOT NULL CHECK (detector_width >= 0),
+    detector_estimate DOUBLE PRECISION NOT NULL,
+    PRIMARY KEY (scored_at, prompt_id)
+);
+CREATE INDEX IF NOT EXISTS p6_drift_alerts_detected_idx
+    ON p6_drift_alerts (detected_at DESC);
 CREATE INDEX IF NOT EXISTS agent_runs_running_deadline_idx
     ON agent_runs (deadline_at) WHERE status = 'running';

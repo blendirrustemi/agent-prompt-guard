@@ -35,7 +35,9 @@ st.set_page_config(page_title="PIJD dashboards", layout="wide")
 pages = {
     "Blendi (P1–P2)": [placeholder("Blendi", "P1–P2 ingestion and IP join", "blendi")],
     "Emma (P3–P4)": [placeholder("Emma", "P3–P4 similarity and classification", "emma")],
-    "Francesca (P5–P6)": [placeholder("Francesca", "P5–P6 anomaly and drift", "francesca")],
+    "Francesca (P5–P6)": [
+        st.Page("views/francesca_anomaly_drift.py", title="Anomaly & score drift", url_path="francesca")
+    ],
     "Shahed (P7–P8)": [
         st.Page("views/shahed_attack_patterns.py", title="Attack patterns & decisions", url_path="shahed-attack-patterns")
     ],

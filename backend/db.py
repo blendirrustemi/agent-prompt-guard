@@ -178,6 +178,20 @@ def save_guard_score(
     return serialize_guard_result(row) if row else None
 
 
+def save_p6_drift_alert(database_url, scored_at, prompt_id, detector_width, detector_estimate):
+    """Persist one ADWIN detection, idempotently keyed to its triggering score."""
+    with connect(database_url) as conn:
+        result = conn.execute(
+            """INSERT INTO p6_drift_alerts
+                   (scored_at, prompt_id, detector_width, detector_estimate)
+               VALUES (%s, %s, %s, %s)
+               ON CONFLICT (scored_at, prompt_id) DO NOTHING
+               RETURNING prompt_id""",
+            (scored_at, prompt_id, detector_width, detector_estimate),
+        ).fetchone()
+    return result is not None
+
+
 def get_p6_score_batch(database_url, after, *, limit=500):
     """Read successfully scored P4 outputs after a (scored_at, prompt_id) cursor."""
     with connect(database_url) as conn:
