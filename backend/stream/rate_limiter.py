@@ -1,6 +1,6 @@
 """P10: rate limiting / throttling. Turns P9 bursts into per-prompt allow/block decisions.
 
-Policy (block only): when a source's window reaches the threshold, the source is blocked for a
+Policy (block only): when any of a source's P9 windows reaches its threshold, the source is blocked for a
 cooldown. Prompts arriving during the cooldown are blocked but do not extend it; continued
 traffic simply triggers a new block once the cooldown ends.
 """
@@ -24,6 +24,7 @@ class ThrottleDecision:
     blocked_until: datetime | None
     burst_started: bool
     event_time: datetime
+    windows: tuple = ()  # P9 WindowCount for every elastic window; window_* above is the deciding one
 
 
 class RateLimiter:
@@ -69,4 +70,5 @@ class RateLimiter:
             blocked_until=until,
             burst_started=burst_started,
             event_time=observation.event_time,
+            windows=observation.windows,
         )

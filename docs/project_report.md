@@ -150,10 +150,19 @@ P7's role as a pre-execution allow/block/review gate is supported in NeMo Guardr
 The `burst` service (`python -m backend.stream.burst_worker`, group `pijd-burst-v1`) reads
 `prompts_raw` beside the intake consumer:
 
-- **P9** counts every prompt per `source` in a sliding window of `BURST_WINDOW_SECONDS` (default 60),
-  using the event's `created_at`, so replays produce the same bursts.
-- **P10** blocks a source once its window reaches `BURST_THRESHOLD` prompts (default 10). The block
-  lasts `BURST_COOLDOWN_SECONDS` (default 300) and is not extended by traffic during it.
+**P9** follows the elastic-burst model of [Zhu & Shasha (2003)](https://doi.org/10.1145/956750.956789). It counts every prompt per `source` in several sliding windows at once, each with its own threshold,
+and reports a burst when any window reaches its threshold. The defaults (`BURST_WINDOWS`) are 6
+prompts in 10 seconds, 10 in 60 seconds and 40 in 600 seconds. The short window catches a sharp
+flood after 6 prompts. The long window catches a slow, steady source, for example
+one prompt every 12 seconds, which never reaches 10 per minute. The allowed rate falls as the
+window grows (0.6, 0.17 and 0.067 prompts per second), as in the paper, where the threshold grows
+more slowly than the window. Windows use the event's `created_at`, so replays produce the same bursts.
+
+Every decision stores the count in each windo (`windows`), plus the **deciding window**: the shortest window that reached its threshold, or otherwise the one closest to it.
+
+**P10** blocks a source as soon as P9 reports a burst. The block lasts `BURST_COOLDOWN_SECONDS` (default 300) and is not extended by traffic during it.
+
+The challenge remaining is that like any per-source limiter, P9 cannot see an attacker who spreads traffic over many sources.
 
 ### Agent and user interface
 
@@ -163,6 +172,8 @@ One LangChain agent with two deterministic tools, running a local model through 
 
 - `calculator(a, operation, b)`: `add`, `subtract`, `multiply` or `divide`, without `eval`.
 - `lookup_course_info(topic)`: facts about this project (deadlines, timeline, stage owners, datasets, models, deliverables) from `backend/agent/course_info.json`.
+
+The agent is built with LangChain's `create_agent`, which runs a ReAct-style loop ([Yao et al., 2023](https://arxiv.org/abs/2210.03629)): the model either answers or calls a tool, reads the tool's result, and repeats until it can answer. Arithmetic and project facts therefore come from the tools rather than from the model's memory. Each run stores every tool call in `agent_runs.tool_calls`, which the agent tool-use dashboard counts per tool.
 
 The browser polls through checking, waiting, and answering, then displays the stored agent response.
 Blocked and review outcomes explain why a prompt was held; each prompt is an independent agent run.
@@ -242,16 +253,14 @@ P6 detected the shift at 12:39:25.822 UTC, 19.2 seconds after the first shifted 
 
 ### Burst detection and throttling experiment
 
-The burst test (`python -m backend.tests.burst_experiment`, see the [developer guide](developer-guide.md#burst-detection-experiment)) ran against the full Compose stack with the default settings: a threshold of 10 prompts in a 60-second window and a 300-second cooldown. A control IP first sent 5 prompts at 1 per second. Then a simulated attacker IP sent 20 prompts at 10 per second, about 2 seconds in total. The prompts were short calculator and course questions. The following is a summary of the results:
+The burst test (`python -m backend.tests.burst_experiment`, see the [developer guide](developer-guide.md#burst-detection-experiment)) ran against the full Compose stack with the default settings: the elastic windows of [Zhu & Shasha (2003)](https://doi.org/10.1145/956750.956789) with 6 prompts in 10 seconds, 10 in 60 seconds and 40 in 600 seconds, and a 300-second cooldown. A control IP first sent 5 prompts at 1 per second. Then a simulated attacker IP sent 20 prompts at 10 per second, about 2 seconds in total. The prompts were short calculator and course questions. The following is a summary of the results:
 
-| Source | Sent | P10 allowed | P10 blocked | First blocked prompt | Final blocks with a throttle reason | Mean P10 latency (ms) |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Control (1 prompt/s) | 5 | 5 | 0 | – | 0 | 275.59 |
-| Attacker (10 prompts/s) | 20 | 9 | 11 | 10 | 11 | 233.09 |
+| Source | Sent | P10 allowed | P10 blocked | First blocked prompt | Window that fired | Final blocks with a throttle reason | Mean P10 latency (ms) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Control (1 prompt/s) | 5 | 5 | 0 | – | – | 0 | 282.78 |
+| Attacker (10 prompts/s) | 20 | 5 | 15 | 6 | 10 s | 15 | 1495.91 |
 
-P9 counted the attacker's prompts 1–9 in its window, and P10 allowed them. At prompt 10 the count reached the threshold: P9 detected the burst, and P10 blocked the source until 300 seconds after that prompt. Prompts 11–20 were blocked as `source_blocked` under the same block, and P7 finalized all 11 throttled prompts as `block` with a throttle reason. The control source was never throttled. All five automated checks passed. The control's mean latency includes a first-prompt outlier of 955 ms; its other prompts took 79–128 ms.
-
-The run also showed P4 false positives. Of the 14 prompts that P10 allowed, P7 blocked 7 and sent 6 to review on the model score; only one was allowed. Simple questions such as "What is 12 times 7?" scored above the block threshold. This does not affect the throttling result, because P7's reason separates throttle blocks from score blocks, but it suggests the classifier is too strict on short benign prompts. This run shows the behaviour at one burst rate and one threshold; it does not measure the maximum rate P9/P10 can handle.
+All prompts fell inside every window, so all three windows counted the attacker's prompts 1–5 identically, and P10 allowed them. At prompt 6 the 10-second window reached its threshold of 6, while the 60- and 600-second windows were still at 6 of 10 and 6 of 40. P9 detected the burst, and P10 blocked the source until 300 seconds after that prompt. Prompts 7–20 were blocked as `source_blocked` under the same block, and P7 finalized all 15 throttled prompts as `block` with a throttle reason. The control source, at most 5 prompts in 10 seconds, was never throttled. All five automated checks passed.
 
 ### Retraining before and after
 

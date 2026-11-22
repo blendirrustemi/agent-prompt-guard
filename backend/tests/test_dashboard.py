@@ -24,18 +24,24 @@ def burst_query(sql, params=()):
         return pd.DataFrame([{"sources": 2, "prompts": 25, "blocked": 11, "bursts": 1}])
     if "GROUP BY source" in sql:
         return pd.DataFrame([{"source": "198.51.100.66", "prompts": 20}, {"source": "198.51.100.10", "prompts": 5}])
+    assert "jsonb_to_recordset" in sql, sql
+    # One row per prompt and elastic window; the attacker's 6th prompt fires the 10 s window.
     rows = []
     for i in range(12):
-        burst = i + 1 >= 10
-        rows.append({
-            "source": "198.51.100.66", "event_time": T0 + timedelta(seconds=i / 10), "window_count": i + 1,
-            "action": "block" if burst else "allow", "reason": "burst_detected" if i + 1 == 10 else ("source_blocked" if burst else ""),
-            "burst_started": i + 1 == 10, "blocked_until": T0 + timedelta(seconds=300) if burst else None,
-            "threshold": 10, "window_seconds": 60,
-        })
+        burst = i + 1 >= 6
+        for seconds, threshold in ((10, 6), (60, 10), (600, 40)):
+            rows.append({
+                "source": "198.51.100.66", "event_time": T0 + timedelta(seconds=i / 10),
+                "window_seconds": seconds, "window_count": i + 1, "threshold": threshold,
+                "action": "block" if burst else "allow",
+                "reason": "burst_detected" if i + 1 == 6 else ("source_blocked" if burst else ""),
+                "burst_started": i + 1 == 6, "blocked_until": T0 + timedelta(seconds=300) if burst else None,
+                "fired_seconds": 10, "fired_count": i + 1,  # 10 s is always the closest to its threshold here
+            })
     rows.append({
-        "source": "198.51.100.10", "event_time": T0, "window_count": 1, "action": "allow", "reason": "",
-        "burst_started": False, "blocked_until": None, "threshold": 10, "window_seconds": 60,
+        "source": "198.51.100.10", "event_time": T0, "window_seconds": 60, "window_count": 1, "threshold": 10,
+        "action": "allow", "reason": "", "burst_started": False, "blocked_until": None,
+        "fired_seconds": 60, "fired_count": 1,  # a row stored before elastic windows: one window only
     })
     return pd.DataFrame(rows)
 
@@ -126,6 +132,13 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual([m.label for m in app.metric][:3], ["Sources seen", "Prompts blocked by P10", "Bursts detected"])
         self.assertEqual(app.metric[1].value, "11 / 25")
         self.assertEqual(len(self.charts(app)), 1)
+        window = app.selectbox(key="burst_window")
+        self.assertEqual(window.options, ["10 s", "60 s", "600 s"])
+        self.assertIn("threshold (6)", app.caption[-1].value)
+        with patch("backend.dashboard.data.query", side_effect=burst_query):
+            window.select(60).run()
+        self.assertEqual(len(app.exception), 0, [e.value for e in app.exception])
+        self.assertIn("threshold (10)", app.caption[-1].value)
 
     def test_agent_page_shows_metrics_and_chart(self):
         app = self.run_page("nandor_agent_tools.py", agent_query)

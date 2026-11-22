@@ -175,7 +175,7 @@ class StreamStorageTests(unittest.TestCase):
                 intake_consumer, burst_consumer, producer = Mock(), Mock(), Mock()
                 producer.flush.return_value = 0
                 cache = SourceContextCache(self.url)
-                detector, limiter = BurstDetector(threshold=1), RateLimiter()
+                detector, limiter = BurstDetector(((60, 1),)), RateLimiter()
 
                 def intake():
                     process_intake(intake_consumer, message, self.url, cache)

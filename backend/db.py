@@ -443,14 +443,19 @@ def get_prompt_result(database_url, prompt_id):
 
 THROTTLE_FIELDS = (
     "prompt_id", "source", "action", "reason", "window_count", "window_seconds", "threshold",
-    "blocked_until", "burst_started", "event_time", "decided_at",
+    "windows", "blocked_until", "burst_started", "event_time", "decided_at",
 )
 
 
 def serialize_throttle_decision(row):
     """Return the stored P10 decision with the same fields as the `throttle_decisions` event (minus schema_version)."""
+    # Rows stored before P9 had elastic windows have '[]'; their single window is in the top-level columns.
+    windows = row["windows"] or [
+        {"seconds": row["window_seconds"], "count": row["window_count"], "threshold": row["threshold"]}
+    ]
     return {
         **{field: row[field] for field in THROTTLE_FIELDS},
+        "windows": windows,
         "prompt_id": str(row["prompt_id"]),
         "blocked_until": row["blocked_until"].isoformat() if row["blocked_until"] else None,
         "event_time": row["event_time"].isoformat(),
@@ -465,7 +470,7 @@ def save_throttle_decision(database_url, decision):
     with connect(database_url) as conn:
         conn.execute(
             f"INSERT INTO throttle_decisions ({columns}) VALUES ({placeholders}) ON CONFLICT (prompt_id) DO NOTHING",
-            tuple(decision[field] for field in THROTTLE_FIELDS),
+            tuple(Jsonb(decision[field]) if field == "windows" else decision[field] for field in THROTTLE_FIELDS),
         )
         row = conn.execute(
             "SELECT * FROM throttle_decisions WHERE prompt_id = %s", (decision["prompt_id"],)

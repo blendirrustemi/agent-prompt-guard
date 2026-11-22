@@ -4,7 +4,8 @@ A control source first sends a few prompts at a normal rate, then an attacker so
 prompts quickly. All prompts are intended to be benign; P4 may still score some as malicious, so
 the final P7 reason shows whether a block came from throttling (`throttle_*`) or the model score.
 The script checks the stored P9/P10 decisions and the final P7 routing, prints a timeline, and
-writes per-prompt and per-source CSV files.
+writes per-prompt and per-source CSV files. P9 uses several elastic windows; the checks take the
+trigger prompt and window from the stored burst, so they hold for any `BURST_WINDOWS` setting.
 
 Run from the project root: python -m backend.tests.burst_experiment
 Requires the running guard services (burst worker, consumer, router), Kafka and PostgreSQL.
@@ -66,7 +67,7 @@ def collect(conn, records, timeout):
     deadline = monotonic() + timeout
     while True:
         rows = conn.execute(
-            """SELECT p.id, t.action, t.reason, t.window_count, t.window_seconds, t.threshold,
+            """SELECT p.id, t.action, t.reason, t.window_count, t.window_seconds, t.threshold, t.windows,
                       t.blocked_until, t.burst_started, t.event_time, t.decided_at AS throttled_at,
                       g.decision, g.reason AS final_reason, g.malicious_score
                FROM prompts p
@@ -87,7 +88,13 @@ def collect(conn, records, timeout):
     for record in records:
         row = by_id.get(record["prompt_id"])
         throttled = row is not None and row["action"] is not None
+        # Every elastic P9 window (rows stored before elastic windows have one, in the top-level columns).
+        windows = (row["windows"] or [{"seconds": row["window_seconds"], "count": row["window_count"],
+                                       "threshold": row["threshold"]}]) if throttled else []
+        record.update({f"p9_count_{w['seconds']}s": w["count"] for w in windows})
         record.update({
+            "_counts": [w["count"] for w in windows],
+            "p9_window_s": row["window_seconds"] if throttled else "",
             "p9_window_count": row["window_count"] if throttled else "",
             "p10_action": row["action"] if throttled else "missing",
             "p10_reason": (row["reason"] or "") if throttled else "",
@@ -109,22 +116,25 @@ def check(records):
     """Return [(passed, description)] for the expected P9/P10/P7 behaviour."""
     attacker = [r for r in records if r["role"] == "attacker"]
     control = [r for r in records if r["role"] == "control"]
-    threshold = next((r["_threshold"] for r in records if r["_threshold"]), None)
-    if threshold is None:
+    if not any(r["p10_action"] != "missing" for r in records):
         return [(False, "No P10 decisions were stored; is the burst worker running?")]
-    if len(attacker) <= threshold:
-        return [(False, f"Send more than {threshold} attacker prompts to observe a block.")]
+    trigger = next((r for r in attacker if r["burst_started"] is True), None)
+    if trigger is None:
+        return [(False, "P9 detected no attacker burst; send more or faster attacker prompts.")]
 
-    before, trigger, after = attacker[:threshold - 1], attacker[threshold - 1], attacker[threshold:]
+    n, window, threshold = trigger["index"], trigger["_window"], trigger["_threshold"]
+    before, after = attacker[:n - 1], attacker[n:]
     blocked = [r for r in records if r["p10_action"] == "block"]
     return [
-        (all(r["p10_action"] == "allow" and r["p9_window_count"] == r["index"] for r in before),
-         f"P9 counts attacker prompts 1-{threshold - 1} (window_count 1-{threshold - 1}) and P10 allows them"),
-        (trigger["p10_action"] == "block" and trigger["p10_reason"] == "burst_detected" and trigger["burst_started"] is True,
-         f"Attacker prompt #{threshold} reaches the threshold: P9 detects the burst and P10 starts a block"),
+        (all(r["p10_action"] == "allow" and r["_counts"] and all(c == r["index"] for c in r["_counts"]) for r in before),
+         f"P9 counts attacker prompts 1-{n - 1} in every window and P10 allows them"),
+        (trigger["p10_action"] == "block" and trigger["p10_reason"] == "burst_detected"
+         and trigger["p9_window_count"] >= threshold,
+         f"Attacker prompt #{n} reaches the {window} s window's threshold ({threshold}): "
+         "P9 detects the burst and P10 starts a block"),
         (all(r["p10_action"] == "block" and r["p10_reason"] == "source_blocked"
              and r["blocked_until"] == trigger["blocked_until"] for r in after),
-         f"Attacker prompts #{threshold + 1}-{len(attacker)} stay blocked during the cooldown (same blocked_until)"),
+         f"Attacker prompts #{n + 1}-{len(attacker)} stay blocked during the cooldown (same blocked_until)"),
         (all(r["p7_decision"] == "block" and r["p7_reason"] in THROTTLE_REASONS for r in blocked),
          "P7 finalizes every P10-blocked prompt as block with a throttle reason"),
         (all(r["p10_action"] == "allow" and r["p7_reason"] not in THROTTLE_REASONS for r in control),
@@ -137,13 +147,14 @@ def summarize(records, role):
     latencies = [r["p10_latency_ms"] for r in rows if r["p10_latency_ms"] != ""]
     first_block = next((r["index"] for r in rows if r["p10_action"] == "block"), "")
     cooldown = next((r["_cooldown"] for r in rows if r["_cooldown"] is not None), "")
+    trigger = next((r for r in rows if r["burst_started"] is True), None)
     return {
         "role": role, "source": rows[0]["source"], "sent": len(rows),
         "p10_allow": sum(r["p10_action"] == "allow" for r in rows),
         "p10_block": sum(r["p10_action"] == "block" for r in rows),
         "first_blocked_index": first_block,
-        "threshold": next((r["_threshold"] for r in rows if r["_threshold"]), ""),
-        "window_s": next((r["_window"] for r in rows if r["_window"]), ""),
+        "trigger_window_s": trigger["_window"] if trigger else "",
+        "trigger_threshold": trigger["_threshold"] if trigger else "",
         "cooldown_s": cooldown,
         "p7_allow": sum(r["p7_decision"] == "allow" for r in rows),
         "p7_block": sum(r["p7_decision"] == "block" for r in rows),
@@ -153,10 +164,14 @@ def summarize(records, role):
     }
 
 
-PROMPT_COLUMNS = (
-    "role", "index", "source", "prompt_id", "sent_offset_s", "p9_window_count", "p10_action", "p10_reason",
-    "burst_started", "blocked_until", "p10_latency_ms", "p7_decision", "p7_reason", "p4_score",
-)
+def prompt_columns(records):
+    """Per-prompt CSV columns, with one p9_count_<n>s column per elastic window, shortest first."""
+    sizes = sorted({int(key[len("p9_count_"):-1]) for r in records for key in r if key.startswith("p9_count_")})
+    return (
+        "role", "index", "source", "prompt_id", "sent_offset_s", *(f"p9_count_{s}s" for s in sizes),
+        "p9_window_s", "p9_window_count", "p10_action", "p10_reason", "burst_started", "blocked_until",
+        "p10_latency_ms", "p7_decision", "p7_reason", "p4_score",
+    )
 
 
 def write_csv(path, rows, columns):
@@ -168,7 +183,7 @@ def write_csv(path, rows, columns):
 
 def table(rows, columns):
     lines = ["| " + " | ".join(columns) + " |", "|" + " --- |" * len(columns)]
-    lines.extend("| " + " | ".join(str(row[c]) for c in columns) + " |" for row in rows)
+    lines.extend("| " + " | ".join(str(row.get(c, "")) for c in columns) + " |" for row in rows)
     return "\n".join(lines)
 
 
@@ -214,10 +229,12 @@ def main():
         return 1
 
     summaries = [summarize(records, "control"), summarize(records, "attacker")]
-    write_csv(args.output_dir / "burst_experiment_prompts.csv", records, PROMPT_COLUMNS)
+    columns = prompt_columns(records)
+    write_csv(args.output_dir / "burst_experiment_prompts.csv", records, columns)
     write_csv(args.output_dir / "burst_experiment_summary.csv", summaries, summaries[0].keys())
 
-    timeline = ("role", "index", "sent_offset_s", "p9_window_count", "p10_action", "p10_reason",
+    counts = tuple(c for c in columns if c.startswith("p9_"))
+    timeline = ("role", "index", "sent_offset_s", *counts, "p10_action", "p10_reason",
                 "p10_latency_ms", "p7_decision", "p7_reason")
     print(f"\nRun {run_id}\n\n" + table(records, timeline))
     print("\n" + table(summaries, list(summaries[0])))

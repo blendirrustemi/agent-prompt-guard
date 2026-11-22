@@ -12,8 +12,8 @@ import psycopg
 from backend import db
 from backend.intake.events import build_raw_event
 from backend.intake.topics import PROMPTS_RAW, THROTTLE_DECISIONS
-from backend.stream.burst import BurstDetector
-from backend.stream.burst_worker import process_message
+from backend.stream.burst import DEFAULT_WINDOWS, BurstDetector
+from backend.stream.burst_worker import parse_windows, process_message
 from backend.stream.rate_limiter import BURST_DETECTED, SOURCE_BLOCKED, RateLimiter
 from backend.stream.throttle_events import EVENT_FIELDS, build_throttle_event, validate_throttle_event
 
@@ -26,7 +26,7 @@ def seconds(n):
 
 class BurstDetectorTests(unittest.TestCase):
     def test_counts_within_window_and_evicts_at_the_edge(self):
-        detector = BurstDetector(window_seconds=60, threshold=10)
+        detector = BurstDetector(((60, 10),))
         self.assertEqual(detector.observe("a", seconds(0)).window_count, 1)
         self.assertEqual(detector.observe("a", seconds(59)).window_count, 2)
         # Exactly 60 s after the first prompt, that prompt has left the window.
@@ -34,7 +34,7 @@ class BurstDetectorTests(unittest.TestCase):
         self.assertEqual(detector.observe("a", seconds(200)).window_count, 1)
 
     def test_sources_are_independent(self):
-        detector = BurstDetector(window_seconds=60, threshold=3)
+        detector = BurstDetector(((60, 3),))
         for i in range(3):
             detector.observe("a", seconds(i))
         observation = detector.observe("b", seconds(3))
@@ -43,33 +43,97 @@ class BurstDetectorTests(unittest.TestCase):
         self.assertEqual(detector.window_count("a"), 3)
 
     def test_burst_flag_at_threshold(self):
-        detector = BurstDetector(window_seconds=60, threshold=10)
+        detector = BurstDetector(((60, 10),))
         flags = [detector.observe("a", seconds(i)).burst for i in range(10)]
         self.assertEqual(flags, [False] * 9 + [True])
 
     def test_late_events_use_latest_time(self):
-        detector = BurstDetector(window_seconds=60, threshold=10)
+        detector = BurstDetector(((60, 10),))
         detector.observe("a", seconds(100))
         self.assertEqual(detector.observe("a", seconds(10)).window_count, 1)  # already outside the window
         self.assertEqual(detector.observe("a", seconds(50)).window_count, 2)
 
     def test_prune_forgets_quiet_sources(self):
-        detector = BurstDetector(window_seconds=60, threshold=10)
+        detector = BurstDetector(((60, 10),))
         detector.observe("old", seconds(0))
         detector.observe("new", seconds(100))
         detector.prune(seconds(100))
         self.assertEqual(detector.sources(), {"new"})
 
     def test_invalid_settings(self):
-        with self.assertRaises(ValueError):
-            BurstDetector(window_seconds=0)
+        for windows in (
+            (), ((0, 5),), ((60, 0),), ((60, 10), (10, 6)),  # unsorted
+            ((60, 10), (60, 20)),  # duplicate size
+            ((10, 6), (60, 6)),  # threshold does not grow: the 10 s window could never fire first
+            (("a", 1),), ((10,),),
+        ):
+            with self.subTest(windows=windows), self.assertRaises(ValueError):
+                BurstDetector(windows)
         with self.assertRaises(ValueError):
             RateLimiter(cooldown_seconds=0)
 
 
+class ElasticBurstTests(unittest.TestCase):
+    """Several window sizes with their own thresholds (Zhu & Shasha, KDD 2003); defaults 10s:6, 60s:10, 600s:40."""
+
+    def first_burst(self, gap_seconds, count):
+        detector = BurstDetector(DEFAULT_WINDOWS)
+        for i in range(count):
+            observation = detector.observe("a", seconds(i * gap_seconds))
+            if observation.burst:
+                return i + 1, observation
+        return None, observation
+
+    def test_default_windows(self):
+        self.assertEqual(DEFAULT_WINDOWS, ((10, 6), (60, 10), (600, 40)))
+        observation = BurstDetector().observe("a", T0)
+        self.assertEqual([(w.seconds, w.count, w.threshold) for w in observation.windows],
+                         [(10, 1, 6), (60, 1, 10), (600, 1, 40)])
+
+    def test_sharp_burst_is_caught_by_the_short_window(self):
+        index, observation = self.first_burst(0.1, 20)  # 10 prompts per second
+        self.assertEqual(index, 6)
+        self.assertEqual((observation.window_seconds, observation.window_count, observation.threshold), (10, 6, 6))
+
+    def test_slow_steady_source_is_caught_only_by_the_long_window(self):
+        index, observation = self.first_burst(12, 60)  # 5 per minute: under 6/10 s and 10/60 s
+        self.assertEqual(index, 40)
+        self.assertEqual(observation.window_seconds, 600)
+        self.assertFalse(any(w.burst for w in observation.windows if w.seconds < 600))
+
+    def test_human_pace_is_never_flagged(self):
+        index, observation = self.first_burst(20, 90)  # 1 prompt per 20 s for 30 minutes
+        self.assertIsNone(index)
+        self.assertEqual(observation.window_count, 30)  # 600 s window, the one closest to its threshold
+
+    def test_deciding_window_without_a_burst_is_the_closest_to_its_threshold(self):
+        detector = BurstDetector(((10, 4), (60, 8)))
+        detector.observe("a", seconds(0))
+        detector.observe("a", seconds(20))
+        observation = detector.observe("a", seconds(40))  # 10 s: 1/4, 60 s: 3/8
+        self.assertEqual((observation.window_seconds, observation.window_count), (60, 3))
+        tie = BurstDetector(((10, 4), (60, 8))).observe("b", T0)  # 1/4 vs 1/8: shorter wins
+        self.assertEqual(tie.window_seconds, 10)
+
+    def test_window_count_per_size(self):
+        detector = BurstDetector()
+        for at in (0, 30, 55):
+            detector.observe("a", seconds(at))
+        self.assertEqual(detector.window_count("a", 10), 1)
+        self.assertEqual(detector.window_count("a", 60), 3)
+        self.assertEqual(detector.window_count("a"), 3)
+
+    def test_parse_windows(self):
+        self.assertEqual(parse_windows("10:6, 60:10,600:40"), DEFAULT_WINDOWS)
+        self.assertEqual(parse_windows("60:10"), ((60, 10),))
+        for value in ("", "60", "60:10:1", "a:b", "60:10,10:6"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                parse_windows(value)
+
+
 class RateLimiterTests(unittest.TestCase):
     def setUp(self):
-        self.detector = BurstDetector(window_seconds=60, threshold=10)
+        self.detector = BurstDetector(((60, 10),))
         self.limiter = RateLimiter(cooldown_seconds=300)
 
     def send(self, source, at):
@@ -118,7 +182,7 @@ class RateLimiterTests(unittest.TestCase):
 
 def burst_decision(count=10):
     """The decision for the count-th prompt from one source in 60 s (threshold 10)."""
-    detector, limiter = BurstDetector(60, 10), RateLimiter(300)
+    detector, limiter = BurstDetector(((60, 10),)), RateLimiter(300)
     decision = None
     for i in range(count):
         decision = limiter.decide(str(uuid4()), detector.observe("source_01", seconds(i)))
@@ -129,7 +193,8 @@ class ThrottleEventTests(unittest.TestCase):
     def test_event_round_trip(self):
         event = build_throttle_event(burst_decision(), decided_at=seconds(10))
         self.assertEqual(set(event), EVENT_FIELDS)
-        self.assertEqual(event["schema_version"], 1)
+        self.assertEqual(event["schema_version"], 2)
+        self.assertEqual(event["windows"], [{"seconds": 60, "count": 10, "threshold": 10}])
         self.assertEqual((event["action"], event["reason"], event["burst_started"]), ("block", BURST_DETECTED, True))
         self.assertEqual(event["blocked_until"], seconds(309).isoformat())
         self.assertEqual(validate_throttle_event(json.loads(json.dumps(event))), event)
@@ -138,10 +203,40 @@ class ThrottleEventTests(unittest.TestCase):
         event = build_throttle_event(burst_decision(count=1))
         self.assertEqual((event["action"], event["reason"], event["blocked_until"]), ("allow", None, None))
 
+    def test_elastic_event_lists_every_window(self):
+        detector, limiter = BurstDetector(), RateLimiter(300)
+        for i in range(6):
+            decision = limiter.decide(str(uuid4()), detector.observe("a", seconds(i * 0.1)))
+        event = build_throttle_event(decision)
+        self.assertEqual((event["action"], event["window_seconds"], event["window_count"]), ("block", 10, 6))
+        self.assertEqual(event["windows"], [
+            {"seconds": 10, "count": 6, "threshold": 6},
+            {"seconds": 60, "count": 6, "threshold": 10},
+            {"seconds": 600, "count": 6, "threshold": 40},
+        ])
+
+    def test_version_one_events_are_normalized(self):
+        event = build_throttle_event(burst_decision())
+        v1 = {**{k: v for k, v in event.items() if k != "windows"}, "schema_version": 1}
+        self.assertEqual(validate_throttle_event(v1), event)
+        with self.assertRaises(ValueError):
+            validate_throttle_event({**v1, "windows": event["windows"]})  # v1 has no windows field
+
+    def test_invalid_windows_are_rejected(self):
+        event = build_throttle_event(burst_decision())
+        for windows in (
+            [], None, [{"seconds": 60, "count": 10}],
+            [{"seconds": 60, "count": 9, "threshold": 10}],  # does not match the deciding window
+            [{"seconds": 60, "count": 10, "threshold": 10}, {"seconds": 10, "count": 1, "threshold": 6}],
+            [{"seconds": 60, "count": 10, "threshold": 10}, {"seconds": 600, "count": -1, "threshold": 40}],
+        ):
+            with self.subTest(windows=windows), self.assertRaises(ValueError):
+                validate_throttle_event({**event, "windows": windows})
+
     def test_invalid_events_are_rejected(self):
         event = build_throttle_event(burst_decision())
         for field, value in (
-            ("schema_version", 2), ("schema_version", True), ("action", "throttle"), ("reason", None),
+            ("schema_version", 3), ("schema_version", True), ("action", "throttle"), ("reason", None),
             ("prompt_id", "nope"), ("window_count", -1), ("threshold", 0), ("burst_started", 1),
             ("blocked_until", None), ("event_time", "2026-11-10T12:00:00"), ("source", " "),
         ):
@@ -166,7 +261,7 @@ class WorkerTests(unittest.TestCase):
         self.consumer = Mock()
         self.producer = Mock()
         self.producer.flush.return_value = 0
-        self.detector, self.limiter = BurstDetector(60, 10), RateLimiter(300)
+        self.detector, self.limiter = BurstDetector(((60, 10),)), RateLimiter(300)
 
     def run_worker(self):
         return process_message(self.consumer, self.producer, self.message, "unused", self.detector, self.limiter)
@@ -252,7 +347,7 @@ class ThrottleStorageTests(unittest.TestCase):
         return {**event, "prompt_id": raw["prompt_id"]}
 
     def test_save_is_idempotent_and_blocks_are_restorable(self):
-        detector, limiter = BurstDetector(60, 2), RateLimiter(300)
+        detector, limiter = BurstDetector(((60, 2),)), RateLimiter(300)
         now = datetime.now(timezone.utc)
         first = self.stored_event(now, limiter.decide(str(uuid4()), detector.observe(self.source, now)))
         burst = self.stored_event(now, limiter.decide(str(uuid4()), detector.observe(self.source, now)))
@@ -288,7 +383,7 @@ class ThrottleKafkaTests(unittest.TestCase):
         raws = [build_raw_event(f"Prompt {i}", source=source, created_at=seconds(i)) for i in range(11)]
         reader = Consumer({"bootstrap.servers": servers, "group.id": f"test-{uuid4()}", "enable.auto.commit": False})
         _, high = reader.get_watermark_offsets(TopicPartition(THROTTLE_DECISIONS, 0), timeout=10)
-        detector, limiter, producer = BurstDetector(60, 10), RateLimiter(300), create_producer(servers)
+        detector, limiter, producer = BurstDetector(((60, 10),)), RateLimiter(300), create_producer(servers)
         try:
             for raw in raws:
                 message = Mock()
