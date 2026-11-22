@@ -4,6 +4,8 @@
 
 ## Abstract
 
+Prompt injection and jailbreak attacks can be used to divert an AI agent from its normal function. This project is the development of a streaming guard that checks prompts before they are passed to a LangChain agent. The guard is built on Kafka and PostgreSQL and incorporates ten processing stages. We compare TF-IDF and frozen MiniLM embeddings with Logistic Regression for the binary detection task and train a multiclass classifier to detect the attack familiy. We train the embedding based classifier using NeurAlchemy and evaluate it on two external datasets. The final Batch 2 model achieved a macro-F1 of 0.94 on the NeurAlchemy test split and 0.66 and 0.62 on deepset and jackhhao respectively, showing weaker generalisation to external prompts. The guard makes a decision to allow, block or review the prompt and stores the results for analysis in a dashboard. 
+
 ## Introduction
 
 AI agents may act on untrusted user input or external content when processing natural-language requests. The model can be redirected from its intended task or produce unsafe outputs by prompt-injection and jailbreak attacks. Programmable guardrails add an extra check before an agent act because training-time alignment alone may not enforce every application-specific rule at runtime ([Rebedea et al., 2023](https://doi.org/10.18653/v1/2023.emnlp-demo.40)). Hence, this project builds a prompt-injection and jailbreak guard.
@@ -41,9 +43,7 @@ P7 combines stored classification and throttling outcomes; only allowed prompts 
 P8 reads stored classifications to maintain rolling attack summaries.
 These stages branch rather than forming a single sequential P1–P10 chain.
 
-The [architecture diagram](architecture-diagram.png) illustrates the wider target, including dashboards and the review/retraining loop.
-A Streamlit dashboard app with one sidebar section per member is part of the runtime; so far it has the P9/P10 burst and agent tool-use pages. The other members' pages and human-label collection are not yet implemented.
-The [team work plan](work-plan.xlsx) shows the planned tasks and the assigned team members. 
+![System architecture showing the prompt guard pipelines and agent flow](architecture-diagram.png)
 
 ### Application setup and interface
 
@@ -62,12 +62,12 @@ TF-IDF features with Logistic Regression is used in Batch 1 to classify prompts 
 #### Batch 2: embedding-based binary classification
 
 Batch 2 uses the pretrained all-MiniLM-L6-v2 encoder to convert the prompts into numerical features. This is the main difference compared to batch 1, which uses TF-IDF. The MiniLM encoder outputs dense, 384-dimensional embeddings designed to place semantically similar text close together. 
-Each prompt is converted into a normalised embedding, which becomes the input to a Logistic Regression classifier. We trained the classifier using the benign/malicious labels, with C=1.0, the lbfgs optimiser, and a maximum of 1000 iterations. Its output is a probability between zero and one representing how likely the prompt is to be malicious. We retained the encoder’s default limit of 256 tokens. The batch 2 model achieved a macro-F1 of 0.94 on the NeurAlchemy test split. It also generalised better than Batch 1 to the external datasets, achieving macro-F1 scores of 0.66 on deepset and 0.62 on jackhhao. We therefore integrated it into P4 to supply the maliciousness score used by P7 for final routing. External performance remained a bit limited: its false-positive rates were approximately 36% and 63%, respectively.
+Each prompt is converted into a normalised embedding, which becomes the input to a Logistic Regression classifier. We trained the classifier using the benign/malicious labels, with C=1.0, the lbfgs optimiser, and a maximum of 1000 iterations. Its output is a probability between zero and one representing how likely the prompt is to be malicious. We retained the encoder’s default limit of 256 tokens.
 
 #### Batch 3: attack-type classification
 
 Batch 3 identifies which of the six attack families a malicious prompt belongs to. We used the same frozen encoder and normalised 384-dimensional embeddings as Batch 2, but trained the classifier only on malicious NeurAlchemy prompts mapped to those families. The classifier uses multinomial Logistic Regression, with a softmax function producing probabilities across the six classes. The predicted attack family is the class with the highest probability. We used balanced class weights to give greater weight to less frequent families.
-Batch 3 achieved a macro-F1 of 0.76 on the NeurAlchemy test split. During streaming inference, it reuses Batch 2’s embedding and supplies an attack-family label when the binary maliciousness score is at least 0.5. This label describes the suspected attack; it does not determine whether the prompt is allowed, blocked, or reviewed.
+During streaming inference, it reuses Batch 2’s embedding and supplies an attack-family label when the binary maliciousness score is at least 0.5. This label describes the suspected attack; it does not determine whether the prompt is allowed, blocked, or reviewed.
 
 #### Batch 4: reviewed-label retraining
 
@@ -75,7 +75,6 @@ Batch 4 is an explicit offline command using reviewed benign/malicious labels su
 
 Both splits must contain both labels; validation rows are never used to fit the candidate. The repository does not currently collect these labels in a review UI. Promotion replaces the active Batch 2 classifier only if the candidate's validation macro-F1 is strictly higher than the current classifier's score on the same labelled validation rows. The encoder and B3 classifier remain unchanged; P6 alerts request human consideration rather than automatically running or promoting B4.
 
-Batch 4 was trained using the repository's reviewed-label CSV, which had 140 rows (70 per label) and validated on 60 rows (30 per label). The existing classifier scored a macro-F1 of 0,6011, while the candidate scored 0.8496 on the same validation split. Additionally, the existing model produced the confusion matrix `[[9, 21], [0, 30]]`, and the candidate produced `[[24, 6], [3, 27]]` with true labels as rows and predicted labels as columns (benign, malicious). The candidate strictly improved over the baseline, so the pipeline promoted it and saved the run report, previous classifier, and previous config under `backend/batch/models/batch4_runs/promoted_20261121T121133Z/`. This validation result applies only to the reviewed sample and does not replace untouched test or external evaluation.
 Operational instructions are in the [developer guide](developer-guide.md#batch-4-reviewed-label-retraining).
 
 ### P1/P2: ingestion, preprocessing and source enrichment
@@ -84,37 +83,13 @@ P1 produces a Unicode-normalized, whitespace cleaned prompt and it gets the char
 
 P2 adds source context using allow, block, and review counts from the preceding ten minutes. To reduce repeated database queries we have a 30-second cache. To the history, only finalized guard decisions contribute and it excludes pending requests and dataset labels. The preprocessing and enrichment snapshot is stored atomically with intake data and saved on duplicate delivery.
 
-P1 creates a separate `cleaned_text` copy using Unicode NFC normalization and
-collapsed/trimmed whitespace. Case and punctuation remain intact. Its features
-come from the **original** text: `char_count`, whitespace-separated `word_count`,
-and `symbol_ratio` (non-alphanumeric, non-whitespace characters / total characters).
-The original text remains available for model inference and agent execution.
-
-P2 joins the exact `source` identifier to stored guard decisions checked within the
-last ten minutes. `source_context` contains `allow_count`, `block_count`,
-`review_count`, and an ISO UTC `as_of` timestamp. Pending decisions and dataset
-labels are excluded. Zero counts mean no recent evaluated history, not a benign
-verdict. P2 provides context; it does not classify or throttle prompts.
-
-Each consumer process caches source context for 30 seconds; updates can therefore
-take up to 30 seconds to appear. Expired entries are removed on lookups, and the
-cache starts empty after a restart. Counts come from PostgreSQL, so duplicate
-Kafka delivery does not increment them. Final P7 decisions supply this history.
-
-The processing dictionary is stored in the nullable `prompts.preprocessing` JSONB
-column. A matching redelivery preserves its first snapshot and any guard decision.
-Older rows with no snapshot receive one only if their event is delivered again;
-startup does not reset offsets or backfill old prompts. Re-run the normal Compose
-startup (or `init-db`) to add the column and source index without replacing data.
-HTTP responses and raw Kafka events keep their existing shapes.
-
 ### P3/P4: similarity and classification
 
 This section focuses on the pipelines 3 and 4 from the architecture. For each incoming prompt within the model’s 256-token limit, the intake worker creates one normalised, 384-dimensional embedding using the pretrained `all-MiniLM-L6-v2` encoder. The encoder’s weights remain frozen during processing. This prompt embedding is used for P3 similarity probing and P4 classification.
 
-P3 compares the incoming embedding with two reference collections: malicious prompts from the NeurAlchemy training data and recent prompts that P4 predicted to be malicious with high confidence. It uses cosine similarity, which is equivalent to the dot product when both vectors are normalised to unit length. P3 returns the closest reference and its similarity score, marking a match when the score is at least 0.85. A similar embedding-based cosine comparison is described in [PromptGuard](https://www.nature.com/articles/s41598-025-31086-y). The numerical similarity score is stored in PostgreSQL and used as a feature by P5’s anomaly detector. 
+P3 compares the incoming embedding with two reference collections: malicious prompts from the NeurAlchemy training data and recent prompts that P4 predicted to be malicious with high confidence. It uses cosine similarity, which is equivalent to the dot product when both vectors are normalised to unit length. P3 returns the closest reference and its similarity score, marking a match when the score is at least 0.85. A similar embedding-based cosine comparison is described in [PromptGuard: A structured framework for injection-resilient language models](https://www.nature.com/articles/s41598-025-31086-y) by Ahmed Alzahrani. The numerical similarity score is stored in PostgreSQL and used as a feature by P5’s anomaly detector. 
 
-P4 applies the trained Batch 2 classifier to estimate whether the incoming prompt is benign or malicious. Combining pretrained text embeddings with traditional classifiers for jailbreak detection has also been explored by [Galinkin and Sablotny (2024)](https://arxiv.org/abs/2412.01547). When the maliciousness probability is at least 0.5, Batch 3 also predicts one of the six attack families using the same embedding. These are predictions made with the saved classifiers.
+P4 applies the trained Batch 2 classifier to estimate whether the incoming prompt is benign or malicious. Combining pretrained text embeddings with traditional classifiers for jailbreak detection has also been explored by ([Galinkin and Sablotny, 2024](https://arxiv.org/abs/2412.01547)). When the maliciousness probability is at least 0.5, Batch 3 also predicts one of the six attack families using the same embedding. These are predictions made with the saved classifiers.
 
 P4 stores the probability, predicted attack family, model version, token coverage, and processing timings in PostgreSQL. P7 uses the stored scoring outcome together with throttling information to make the final allow, block, or review decision. Only allowed prompts reach the agent, which generates the response.
 
@@ -221,32 +196,18 @@ Imported dataset prompts are sent through a replay tool to the same Kafka path a
 
 Automated tests were added for API behavior, Kafka intake, preprocessing, source caching, dataset replay, routing, browser polling, and agent lifecycle handling. Complete flow tests use a deterministic model and agent fixtures with Kafka and PostgreSQL to check the routing outcomes and duplicate execution prevention.
 
-The complete-flow checks use real Kafka and PostgreSQL with injected deterministic model/agent fixtures.
-They exercise routing outcomes, the outbox, duplicate execution prevention, and the HTTP result lifecycle.
-P1/P2 and replay checks use local fixtures and controlled clocks; optional integration checks exercise real storage and Kafka.
-P3/P4 unit checks inject encoder/classifier fixtures, while separate opt-in checks use MiniLM and Ollama.
-These descriptions identify the available checks; they do not record a completed test run or its outcome.
-Commands and test-environment setup are in the [developer guide](developer-guide.md#checks).
-
-### Model evaluation methodology
-
-The saved B1/B2 artifacts are evaluated on imported external-test rows, with deepset and jackhhao reported separately.
-The evaluation reports malicious-class precision, recall, F1, macro-F1, false-positive rate, ROC-AUC, and confusion counts.
-Per-prompt inference latency includes feature or embedding generation and prediction, and excludes model loading.
-B3's saved classifier and configuration include its attack-type evaluation metrics.
-
-### Recorded automated test results
-
 ### Model comparison results
 
-Batch 4 compared both models using the reviewed-label CSV on the same 60 validation prompts (30 benign and 30 malicious). the current model scored a macro-F1 of 0.6011, while candidate scored 0.8496 and was promoted. In the table below, the true labels and predictions, as rows and columns respectively, were mapped into confusion matrices and ordered benign then malicious: 
+The batch 2 model achieved a macro-F1 of 0.94 on the NeurAlchemy test split. It also generalised better than Batch 1 to the external datasets, achieving macro-F1 scores of 0.66 on deepset and 0.62 on jackhhao. We therefore integrated it into P4 to supply the maliciousness score used by P7 for final routing. External performance remained a bit limited: its false-positive rates were approximately 36% and 63%, respectively.
 
-| Model | Validation macro-F1 | Confusion matrix |
-| --- | ---: | --- |
-| Current | 0.6011 | `[[9, 21], [0, 30]]` |
-| Batch 4 candidate (promoted) | 0.8496 | `[[24, 6], [3, 27]]` |
+The saved Batch 1 and Batch 2 external-test results are recorded in [evaluation.json](../evaluation.json):
 
-`backend/batch/models/batch4_runs/` is where the reports, including label counts and candidate training metrics are located. Because the reviewed set is small, the promotion metric reflects model selection and should not be treated as an unbiased final test estimate.
+| External dataset | Batch 1 macro-F1 | Batch 2 macro-F1 |
+| --- | ---: | ---: |
+| deepset | 0.39 | 0.66 |
+| jackhhao | 0.38 | 0.62 |
+
+Batch 3 achieved a macro-F1 of 0.76 on the NeurAlchemy test split.
 
 ### Guard latency and throughput
 
@@ -286,14 +247,18 @@ All prompts fell inside every window, so all three windows counted the attacker'
 
 ### Retraining before and after
 
-[Batch 4: reviewed-label retraining](#batch-4-reviewed-label-retraining) reports the validation metrics and confusion matrices for the current and candidate models. The candidate strictly improved macro-F1 and was promoted, though its validation score is not an untouched test result.
+Batch 4 was trained using the repository's reviewed-label CSV, which had 140 rows (70 per label) and validated on 60 rows (30 per label). The existing classifier scored a macro-F1 of 0,6011, while the candidate scored 0.8496 on the same validation split. Additionally, the existing model produced the confusion matrix `[[9, 21], [0, 30]]`, and the candidate produced `[[24, 6], [3, 27]]` with true labels as rows and predicted labels as columns (benign, malicious). The candidate strictly improved over the baseline, so the pipeline promoted it and saved the run report, previous classifier, and previous config under `backend/batch/models/batch4_runs/promoted_20261121T121133Z/`. This validation result applies only to the reviewed sample and does not replace untouched test or external evaluation.
+
+The confusion matrices below use true labels as rows and predicted labels as columns, ordered benign then malicious:
+
+| Model | Validation macro-F1 | Confusion matrix |
+| --- | ---: | --- |
+| Current | 0.6011 | `[[9, 21], [0, 30]]` |
+| Batch 4 candidate (promoted) | 0.8496 | `[[24, 6], [3, 27]]` |
+
+`backend/batch/models/batch4_runs/` is where the reports, including label counts and candidate training metrics are located. Because the reviewed set is small, the promotion metric reflects model selection and should not be treated as an unbiased final test estimate.
 
 When data distributions change, concept-drift research treats retraining as one way to adapt ([Lu et al., 2019](https://doi.org/10.1109/TKDE.2018.2876857)), which gives context for comparing the reviewed-label candidate with the active model. In this project, Batch 4 was run manually on reviewed data. P6's score-distribution alert does not trigger retraining automatically, and the strict macro-F1 promotion rule is our own selection policy.
-
-
-### Guarded versus unguarded agent demonstration
-
-### Dashboard evaluation
 
 ## References
 
@@ -306,3 +271,5 @@ When data distributions change, concept-drift research treats retraining as one 
 - Montiel, J., Read, J., Bifet, A., & Abdessalem, T. (2021). River: Machine learning for streaming data in Python. *Journal of Machine Learning Research, 22*(110), 1–8. [https://www.jmlr.org/papers/v22/20-1380.html](https://www.jmlr.org/papers/v22/20-1380.html)
 - Ntroumpogiannis, A., Giannoulis, M., Myrtakis, N., Christophides, V., Simon, E., & Tsamardinos, I. (2023). A meta-level analysis of online anomaly detectors. *The VLDB Journal, 32*(4), 845–886. [https://doi.org/10.1007/s00778-022-00773-x](https://doi.org/10.1007/s00778-022-00773-x)
 - Rebedea, T., Dinu, R., Sreedhar, M. N., Parisien, C., & Cohen, J. (2023). NeMo Guardrails: A toolkit for controllable and safe LLM applications with programmable rails. In *Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing: System Demonstrations* (pp. 431–445). [https://doi.org/10.18653/v1/2023.emnlp-demo.40](https://doi.org/10.18653/v1/2023.emnlp-demo.40)
+- Yao, S., Zhao, J., Yu, D., Du, N., Shafran, I., Narasimhan, K., & Cao, Y. (2023). ReAct: Synergizing reasoning and acting in language models. *International Conference on Learning Representations (ICLR).* [https://arxiv.org/abs/2210.03629](https://arxiv.org/abs/2210.03629)
+- Zhu, Y., & Shasha, D. (2003). Efficient elastic burst detection in data streams. In *Proceedings of the ninth ACM SIGKDD international conference on Knowledge discovery and data mining* (pp. 336–345). [https://doi.org/10.1145/956750.956789](https://doi.org/10.1145/956750.956789)
