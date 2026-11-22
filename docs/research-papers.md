@@ -65,3 +65,64 @@ Formalizes sliding-window stream queries, including Top-K frequency queries. Tha
 **Source:** [IEEE Xplore](https://doi.org/10.1109/TKDE.2018.2876857).
 
 This paper reviews concept-drift detection and adaptation methods, including model retraining. Their survey gives context for the Batch 4 before-and-after comparison. In this project, we launch Batch 4 manually on reviewed labels, and drift alerts do not trigger retraining automatically.
+
+## 7. Perspectives on Incorporating Expert Feedback into Model Updates (2023)
+
+**Authors:** Valerie Chen, Umang Bhatt, Hoda Heidari, Adrian Weller, and Ameet Talwalkar.
+
+**Venue:** *Patterns*, vol. 4, no. 7, article 100780.
+
+**Source:** [DOI](https://doi.org/10.1016/j.patter.2023.100780).
+
+**Relevant project components:**
+- Batch 4: Reviewed-label retraining
+
+**Reason for including:**
+
+This paper discusses ways to incorporate expert feedback into model updates, including updates to training data. It provides context for Batch 4's use of reviewed labels. Our CSV workflow, validation comparison, and promotion rule are project-specific; the paper does not evaluate this implementation.
+
+## 8. A Meta-level Analysis of Online Anomaly Detectors (2023)
+
+**Authors:** Antonios Ntroumpogiannis, Michail Giannoulis, Nikolaos Myrtakis, Vassilis Christophides, Eric Simon, and Ioannis Tsamardinos.
+
+**Venue:** *The VLDB Journal*, vol. 32, no. 4, pp. 845–886.
+
+**Source:** [DOI](https://doi.org/10.1007/s00778-022-00773-x).
+
+**Relevant project components:**
+- P5: Streaming anomaly detection
+
+**Reason for including:**
+
+This study compares online anomaly detectors across algorithm families and data characteristics, including tree-based methods. It provides background for selecting an online detector.
+
+## 9. River: Machine Learning for Streaming Data in Python (2021)
+
+**Authors:** Jacob Montiel, Max Halford, Saulo Martiello Mastelini, Geoffrey Bolmier, Raphael Sourty, Robin Vaysse, Adil Zouitine, Heitor Murilo Gomes, Jesse Read, Talel Abdessalem, and Albert Bifet.
+
+**Venue:** *Journal of Machine Learning Research*, vol. 22, no. 110, pp. 1–8.
+
+**Source:** [JMLR](https://www.jmlr.org/papers/v22/20-1380.html).
+
+**Relevant project components:**
+- P5: Half-Space Trees implementation
+- P6: ADWIN drift detector implementation
+
+**Reason for including:**
+
+River is the Python library used by P5 and P6 for streaming-learning algorithms. This paper describes the library; the project's feature design, settings, and use of P4 scores with ADWIN are implementation choices.
+
+## 10. Scalable Detection of Concept Drifts on Data Streams with Parallel Adaptive Windowing (2018)
+
+**Authors:** Philipp M. Grulich, René Saitenmacher, Jonas Traub, Sebastian Breß, Tilmann Rabl, and Volker Markl.
+
+**Venue:** In *Proceedings of the 21st International Conference on Extending Database Technology* (EDBT 2018), pp. 477–480.
+
+**Source:** [DOI](https://doi.org/10.5441/002/edbt.2018.51).
+
+**Relevant project components:**
+- P6: Score drift monitoring with ADWIN
+
+**Reason for including:**
+
+This paper examines ADWIN and parallel approaches to scaling adaptive-window drift detection on high-velocity streams. It gives context for P6's detector choice; P6 monitors the distribution of P4 scores and does not establish changes in ground-truth attack prevalence or model accuracy.
