@@ -6,4 +6,5 @@ __pycache__/
 tmp/
 .pytest_cache/
 .idea/
+Others/cache/
 

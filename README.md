@@ -4,15 +4,24 @@ PIJD protects a LangChain agent from prompt-injection and jailbreak attempts.
 It checks incoming prompts, assigns maliciousness scores and attack types,
 and routes each prompt to **allow**, **block**, or **review** before agent execution.
 
+## Repository layout
+
+`backend/` and `frontend/` contain the application and its active Batch 2/3 models.
+`Others/` contains documentation, experiment results, and old temporary files.
+The archived backend tools, tests, notebooks, baseline models, and training history were removed.
+Supporting files retain their original folder structure inside `Others/`.
+Local environments, configuration, PostgreSQL data, and model caches stay in place.
+`Others/` is excluded from Docker builds.
+
 ## Documentation
 
-- **[Project report](docs/project_report.md)** - introduction, datasets, system architecture, and testing/experiment sections. 
-- **[Developer guide](docs/developer-guide.md)** - detailed setup, APIs, event contracts, configuration, dataset replay, training, checks, and troubleshooting.
-- **[Folder guide](docs/folder-guide.md)** - explains what each folder contains.
-- **[Research-paper notes](docs/research-papers.md)** - research papers used in this project and referenced in the project report. 
-- **[Team work plan](docs/work-plan.xlsx)** - planned tasks and assigned team members. 
+- **[Project report](Others/docs/project_report.md)** - introduction, datasets, system architecture, and testing/experiment sections.
+- **[Developer guide](Others/docs/developer-guide.md)** - detailed setup, APIs, event contracts, configuration, dataset replay, and troubleshooting; includes historical instructions for removed backend tools.
+- **[Folder guide](Others/docs/folder-guide.md)** - explains what each folder contains.
+- **[Research-paper notes](Others/docs/research-papers.md)** - research papers used in this project and referenced in the project report.
+- **[Team work plan](Others/docs/work-plan.xlsx)** - planned tasks and assigned team members.
 
-## Architecture - simple overview 
+## Architecture - simple overview
 
 ```text
 Browser or HTTP CLI -> Flask -> Kafka prompts_raw
@@ -38,7 +47,7 @@ The browser shows processing progress, guard verdicts, and allowed-prompt answer
 - [Ollama](https://ollama.com) running on the host with a tool-capable model.
 - Ports **5050**, **55432**, and **9094** available.
 - Root `.env` copied from [.env.example](.env.example), with the Ollama model selected.
-- Python for optional local CLI/development work; Python **3.13+** and **uv** for batch/notebook commands.
+- Python for optional local CLI/development work.
 
 Run commands below from the **project root**.
 Containers use internal database/Kafka addresses; local Python uses the root `.env`.
@@ -76,7 +85,7 @@ Flask starts after its required runtime workers are healthy.
 Missing or incompatible model artifacts stop the consumer with an error.
 
 For service logs, port conflicts, or standalone PostgreSQL, see
-[startup details](docs/developer-guide.md#start-the-complete-local-stack).
+[startup details](Others/docs/developer-guide.md#start-the-complete-local-stack).
 
 ## Use the guard
 
@@ -92,7 +101,7 @@ python3 -m backend.ask "Which datasets are used in this university project?"
 ```
 
 This uses the same guarded HTTP path as the browser and prints the answer or hold outcome.
-See [CLI and API details](docs/developer-guide.md#command-line-prompt-to-answer)
+See [CLI and API details](Others/docs/developer-guide.md#command-line-prompt-to-answer)
 for JSON output, resume/retry behaviour, and execution states.
 
 ## Stop without deleting data
@@ -107,8 +116,5 @@ The Compose database does not import a standalone database from `tmp/postgres-de
 
 ## Development and experiments
 
-- [Local Python setup](docs/developer-guide.md#local-python-and-command-line-publishing)
-- [Dataset imports, batch training, and model evaluation](docs/developer-guide.md#database-and-batch-data)
-- [Dataset replay through the real guard](docs/developer-guide.md#dataset-replay)
-- [Automated checks and integration-test setup](docs/developer-guide.md#checks)
-- [Reviewed-label retraining](docs/developer-guide.md#batch-4-reviewed-label-retraining)
+- [Local Python setup](Others/docs/developer-guide.md#local-python-and-command-line-publishing)
+- [Dataset replay through the real guard](Others/docs/developer-guide.md#dataset-replay)
