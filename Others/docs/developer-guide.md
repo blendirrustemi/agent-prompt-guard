@@ -7,6 +7,8 @@
 cannot run from this checkout. This includes backend tests, training, dataset imports,
 evaluation tools, and the demo guard stub. The application and active Batch 2/3 models remain available.
 The frontend tests under `Others/frontend/` were also removed; their commands below are historical references.
+The dashboard tests updated on main are retained in `backend/tests/test_dashboard.py`; run them with
+`python -m unittest discover -s backend/tests -p test_dashboard.py -v` in an environment with the runtime dependencies.
 
 This guide contains detailed setup, commands, interfaces, configuration, and troubleshooting.
 For the purpose and design of the system, see the [system architecture](project_report.md#system-architecture).
@@ -565,14 +567,16 @@ Evaluate the saved B1/B2 artifacts on imported external-test rows and save a JSO
 report (the command also prints JSON when `--output` is omitted):
 
 ```sh
-uv run --project Others/backend/batch --locked python -m Others.backend.batch.evaluation --output Others/evaluation.json
+uv run --project Others/backend/batch --locked python -m Others.backend.batch.evaluation --output results/evaluation.json
 ```
 
 The report separates deepset and jackhhao and includes malicious-class precision,
 recall, F1, macro-F1, false-positive rate, ROC-AUC, confusion counts, and per-prompt
 inference latency. Latency includes text feature or embedding generation and prediction,
 but excludes model loading. Cross-dataset duplicate prompts are represented by whichever
-source the importer retained.
+source the importer retained. The Dockerfile copies `results/` into `/app/results/`,
+so the saved evaluation is available at `/app/results/evaluation.json` inside the
+dashboard container after rebuilding the shared image and recreating the container.
 
 ## Simple guard latency and throughput test
 
@@ -685,7 +689,7 @@ To add your page:
    gives the shared time-range selector.
 2. In `backend/dashboard/app.py`, replace your placeholder with
    `st.Page("views/<name>.py", title="...", url_path="<name>")` in your section.
-3. Add a render test to `Others/backend/tests/test_dashboard.py` with fixture data, like the existing ones.
+3. Add a render test to `backend/tests/test_dashboard.py` with fixture data, like the existing ones.
 
 Streamlit is pinned in `backend/requirements.txt`; Altair, used for the charts, comes with it.
 

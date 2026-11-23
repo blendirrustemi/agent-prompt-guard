@@ -13,7 +13,9 @@
 | `backend/agent/` | LangChain/Ollama agent, two tools, and allowed-prompt worker. |
 | `backend/dashboard/` | Streamlit app (`app.py`) with one sidebar section per member, shared PostgreSQL access (`data.py`), and member pages in `views/`. |
 | `backend/batch/models/` | Active Batch 2/3 models required by the guard. |
-| `Others/results/` | Saved experiment CSVs; external evaluation is in `Others/evaluation.json`. |
+| `results/evaluation.json` | Saved model evaluation required by Emma’s dashboard and copied into the Docker image. |
+| `backend/tests/` | Dashboard render tests preserved from the latest main updates. |
+| `Others/results/` | Archived experiment CSVs. |
 | `Others/tmp/` | Old logs, screenshots, and verification scripts. Local PostgreSQL data and model caches remain in `tmp/`. |
 | `Others/docs/` | Project report, developer guide, Excel work plan, research notes, and architecture/database diagrams (`database-schema.dbml` opens in dbdiagram.io). |
 
@@ -54,6 +56,6 @@ Kafka event and P1–P4 path. Wait for the consumer's scorer-ready log after mod
 the MiniLM download cache is kept in a Compose volume. See the developer guide for configuration and the report for token-limit handling.
 
 The archived backend tools, backend and frontend tests, notebooks, baseline models, and training history were removed.
-Training and test commands in the developer guide are retained as historical references.
+Dashboard tests updated on main are retained in `backend/tests/`. Other training and test commands in the developer guide are retained as historical references.
 Keep the version-two event contract and shared topic names consistent. Runtime packages belong in
 `backend/requirements.txt`.

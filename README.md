@@ -7,6 +7,8 @@ and routes each prompt to **allow**, **block**, or **review** before agent execu
 ## Repository layout
 
 `backend/` and `frontend/` contain the application and its active Batch 2/3 models.
+`results/evaluation.json` supplies the saved results for the model-evaluation dashboard.
+`backend/tests/` contains the dashboard tests updated on main.
 `Others/` contains documentation, experiment results, and old temporary files.
 The archived backend tools, tests, notebooks, baseline models, and training history were removed.
 Supporting files retain their original folder structure inside `Others/`.

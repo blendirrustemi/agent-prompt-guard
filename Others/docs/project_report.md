@@ -8,7 +8,7 @@ were subsequently deleted. References to those files describe the historical set
 
 ## Abstract
 
-Prompt injection and jailbreak attacks can be used to divert an AI agent from its normal function. This project is the development of a streaming guard that checks prompts before they are passed to a LangChain agent. The guard is built on Kafka and PostgreSQL and incorporates ten processing stages. We compare TF-IDF and frozen MiniLM embeddings with Logistic Regression for the binary detection task and train a multiclass classifier to detect the attack familiy. We train the embedding based classifier using NeurAlchemy and evaluate it on two external datasets. The final Batch 2 model achieved a macro-F1 of 0.94 on the NeurAlchemy test split and 0.66 and 0.62 on deepset and jackhhao respectively, showing weaker generalisation to external prompts. The guard makes a decision to allow, block or review the prompt and stores the results for analysis in a dashboard. 
+Prompt injection and jailbreak attacks can be used to divert an AI agent from its normal function. This project is the development of a streaming guard that checks prompts before they are passed to a LangChain agent. The guard is built on Kafka and PostgreSQL and incorporates ten processing stages. We compare TF-IDF and frozen MiniLM embeddings with Logistic Regression for the binary detection task and train a multiclass classifier to detect the attack familiy. We train the embedding based classifier using NeurAlchemy and evaluate it on two external datasets. The final Batch 2 model achieved a macro-F1 of 0.94 on the NeurAlchemy test split and 0.66 and 0.62 on deepset and jackhhao respectively, showing weaker generalisation to external prompts. The guard makes a decision to allow, block or review the prompt and stores the results for analysis in a dashboard. This project demonstrates how prompt screening and monitoring can be integrated into an AI agent’s workflow before a prompt is executed. It also highlights the importance of human review and evaluation on varied prompts to identify weaknesses and guide future retraining of the guard.
 
 ## Introduction
 
@@ -204,7 +204,7 @@ Automated tests were added for API behavior, Kafka intake, preprocessing, source
 
 The batch 2 model achieved a macro-F1 of 0.94 on the NeurAlchemy test split. It also generalised better than Batch 1 to the external datasets, achieving macro-F1 scores of 0.66 on deepset and 0.62 on jackhhao. We therefore integrated it into P4 to supply the maliciousness score used by P7 for final routing. External performance remained a bit limited: its false-positive rates were approximately 36% and 63%, respectively.
 
-The saved Batch 1 and Batch 2 external-test results are recorded in [evaluation.json](../evaluation.json):
+The saved Batch 1 and Batch 2 external-test results are recorded in [evaluation.json](../../results/evaluation.json):
 
 | External dataset | Batch 1 macro-F1 | Batch 2 macro-F1 |
 | --- | ---: | ---: |
