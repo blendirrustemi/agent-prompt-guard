@@ -1,6 +1,10 @@
 # Project report: PIJD Prompt Guard
 
-[README](../README.md) | [Developer guide](developer-guide.md) | [Research-paper notes](research-papers.md)
+[README](../../README.md) | [Developer guide](developer-guide.md) | [Research-paper notes](research-papers.md)
+
+**Archive note:** This report describes the completed experiments. The supporting backend
+tools, notebooks, tests, baseline models, and training history under `Others/backend/`
+were subsequently deleted. References to those files describe the historical setup.
 
 ## Abstract
 
@@ -200,7 +204,7 @@ Automated tests were added for API behavior, Kafka intake, preprocessing, source
 
 The batch 2 model achieved a macro-F1 of 0.94 on the NeurAlchemy test split. It also generalised better than Batch 1 to the external datasets, achieving macro-F1 scores of 0.66 on deepset and 0.62 on jackhhao. We therefore integrated it into P4 to supply the maliciousness score used by P7 for final routing. External performance remained a bit limited: its false-positive rates were approximately 36% and 63%, respectively.
 
-The saved Batch 1 and Batch 2 external-test results are recorded in [evaluation.json](../results/evaluation.json):
+The saved Batch 1 and Batch 2 external-test results are recorded in [evaluation.json](../../results/evaluation.json):
 
 | External dataset | Batch 1 macro-F1 | Batch 2 macro-F1 |
 | --- | ---: | ---: |
@@ -236,7 +240,7 @@ P6 detected the shift at 12:39:25.822 UTC, 19.2 seconds after the first shifted 
 
 ### Burst detection and throttling experiment
 
-The burst test (`python -m backend.tests.burst_experiment`, see the [developer guide](developer-guide.md#burst-detection-experiment)) ran against the full Compose stack with the default settings: the elastic windows of [Zhu & Shasha (2003)](https://doi.org/10.1145/956750.956789) with 6 prompts in 10 seconds, 10 in 60 seconds and 40 in 600 seconds, and a 300-second cooldown. A control IP first sent 5 prompts at 1 per second. Then a simulated attacker IP sent 20 prompts at 10 per second, about 2 seconds in total. The prompts were short calculator and course questions. The following is a summary of the results:
+The burst test (`python -m Others.backend.tests.burst_experiment`, see the [developer guide](developer-guide.md#burst-detection-experiment)) ran against the full Compose stack with the default settings: the elastic windows of [Zhu & Shasha (2003)](https://doi.org/10.1145/956750.956789) with 6 prompts in 10 seconds, 10 in 60 seconds and 40 in 600 seconds, and a 300-second cooldown. A control IP first sent 5 prompts at 1 per second. Then a simulated attacker IP sent 20 prompts at 10 per second, about 2 seconds in total. The prompts were short calculator and course questions. The following is a summary of the results:
 
 | Source | Sent | P10 allowed | P10 blocked | First blocked prompt | Window that fired | Final blocks with a throttle reason | Mean P10 latency (ms) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -247,7 +251,7 @@ All prompts fell inside every window, so all three windows counted the attacker'
 
 ### Retraining before and after
 
-Batch 4 was trained using the repository's reviewed-label CSV, which had 140 rows (70 per label) and validated on 60 rows (30 per label). The existing classifier scored a macro-F1 of 0,6011, while the candidate scored 0.8496 on the same validation split. Additionally, the existing model produced the confusion matrix `[[9, 21], [0, 30]]`, and the candidate produced `[[24, 6], [3, 27]]` with true labels as rows and predicted labels as columns (benign, malicious). The candidate strictly improved over the baseline, so the pipeline promoted it and saved the run report, previous classifier, and previous config under `backend/batch/models/batch4_runs/promoted_20261121T121133Z/`. This validation result applies only to the reviewed sample and does not replace untouched test or external evaluation.
+Batch 4 was trained using the repository's reviewed-label CSV, which had 140 rows (70 per label) and validated on 60 rows (30 per label). The existing classifier scored a macro-F1 of 0,6011, while the candidate scored 0.8496 on the same validation split. Additionally, the existing model produced the confusion matrix `[[9, 21], [0, 30]]`, and the candidate produced `[[24, 6], [3, 27]]` with true labels as rows and predicted labels as columns (benign, malicious). The candidate strictly improved over the baseline, so the pipeline promoted it and saved the run report, previous classifier, and previous config under `Others/backend/batch/models/batch4_runs/promoted_20261121T121133Z/`. This validation result applies only to the reviewed sample and does not replace untouched test or external evaluation.
 
 The confusion matrices below use true labels as rows and predicted labels as columns, ordered benign then malicious:
 
@@ -256,7 +260,7 @@ The confusion matrices below use true labels as rows and predicted labels as col
 | Current | 0.6011 | `[[9, 21], [0, 30]]` |
 | Batch 4 candidate (promoted) | 0.8496 | `[[24, 6], [3, 27]]` |
 
-`backend/batch/models/batch4_runs/` is where the reports, including label counts and candidate training metrics are located. Because the reviewed set is small, the promotion metric reflects model selection and should not be treated as an unbiased final test estimate.
+`Others/backend/batch/models/batch4_runs/` is where the reports, including label counts and candidate training metrics are located. Because the reviewed set is small, the promotion metric reflects model selection and should not be treated as an unbiased final test estimate.
 
 When data distributions change, concept-drift research treats retraining as one way to adapt ([Lu et al., 2019](https://doi.org/10.1109/TKDE.2018.2876857)), which gives context for comparing the reviewed-label candidate with the active model. In this project, Batch 4 was run manually on reviewed data. P6's score-distribution alert does not trigger retraining automatically, and the strict macro-F1 promotion rule is our own selection policy.
 
