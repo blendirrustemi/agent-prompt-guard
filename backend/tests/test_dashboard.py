@@ -1,5 +1,6 @@
 """Render the Streamlit dashboards with fixture data (no database needed)."""
 
+import json
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -126,6 +127,63 @@ class DashboardTests(unittest.TestCase):
         app.run()
         self.assertEqual(len(app.exception), 0, [e.value for e in app.exception])
         self.assertIn("Blendi", app.info[0].value)
+
+    def test_emma_page_shows_both_datasets_without_database_queries(self):
+        import streamlit as st
+
+        report = json.loads((DASHBOARD.parents[1] / "results" / "evaluation.json").read_text())
+        app = self.run_page("emma_model_evaluation.py", database_down)
+        self.assertEqual(app.title[0].value, "Model evaluation")
+        self.assertEqual(app.selectbox(key="emma_dataset").value, "deepset")
+        self.assertEqual([caption.value for caption in app.caption], [
+            "Saved results before Batch 4 retraining.",
+            "Latency includes encoding and prediction; excludes model loading.",
+        ])
+        for dataset in ("deepset", "jackhhao"):
+            with (
+                self.subTest(dataset=dataset),
+                patch("backend.dashboard.data.query", side_effect=database_down),
+                patch("streamlit.altair_chart", wraps=st.altair_chart) as render_chart,
+            ):
+                app.selectbox(key="emma_dataset").select(dataset).run()
+                self.assertEqual(len(app.exception), 0, [e.value for e in app.exception])
+                charts = self.charts(app)
+                self.assertEqual(len(charts), 2)
+                self.assertEqual(len(app.dataframe), 1)
+                table = app.dataframe[0].value
+                self.assertEqual(list(table.columns), [
+                    "Model", "Accuracy", "Macro-F1", "ROC-AUC", "Mean latency (ms)", "p95 latency (ms)",
+                ])
+                self.assertEqual(table["Model"].tolist(), ["Batch 1", "Batch 2"])
+                for index, model in enumerate(("batch1", "batch2")):
+                    saved = report["results"][dataset][model]
+                    for column, expected in (
+                        ("Accuracy", saved["accuracy"]), ("Macro-F1", saved["macro_f1"]),
+                        ("ROC-AUC", saved["roc_auc"]), ("Mean latency (ms)", saved["latency_ms"]["mean"]),
+                        ("p95 latency (ms)", saved["latency_ms"]["p95"]),
+                    ):
+                        self.assertAlmostEqual(table.iloc[index][column], expected)
+
+                # Check display formatting without rounding the saved numbers.
+                columns = json.loads(app.dataframe[0].proto.columns)
+                for column in table.columns[1:]:
+                    self.assertEqual(columns[column]["type_config"]["format"], "%.2f")
+                performance, false_positives = [call.args[0].to_dict() for call in render_chart.call_args_list]
+                for spec, domain in ((performance, [0, 1]), (false_positives, [0, 100])):
+                    self.assertEqual(spec["encoding"]["y"]["scale"]["domain"], domain)
+                    self.assertEqual(spec["encoding"]["y"]["axis"]["format"], ".2f")
+                    self.assertEqual(spec["encoding"]["tooltip"][-1]["format"], ".2f")
+
+                performance_rows = render_chart.call_args_list[0].args[0].data.to_dict(orient="records")
+                for row in performance_rows:
+                    model = "batch1" if row["Model"] == "Batch 1" else "batch2"
+                    field = {"Precision": "precision_malicious", "Recall": "recall_malicious", "Macro-F1": "macro_f1"}[row["Metric"]]
+                    self.assertAlmostEqual(row["Score"], report["results"][dataset][model][field])
+                rate_rows = render_chart.call_args_list[1].args[0].data.to_dict(orient="records")
+                self.assertEqual(len(rate_rows), 4)
+                for row in rate_rows:
+                    model = "batch1" if row["Model"] == "Batch 1" else "batch2"
+                    self.assertAlmostEqual(row["Rate"], report["results"][row["Dataset"]][model]["false_positive_rate"] * 100)
 
     def test_burst_page_shows_metrics_and_chart(self):
         app = self.run_page("nandor_burst.py", burst_query)

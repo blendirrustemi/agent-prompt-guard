@@ -559,14 +559,16 @@ Evaluate the saved B1/B2 artifacts on imported external-test rows and save a JSO
 report (the command also prints JSON when `--output` is omitted):
 
 ```sh
-uv run --project backend/batch --locked python -m backend.batch.evaluation --output evaluation.json
+uv run --project backend/batch --locked python -m backend.batch.evaluation --output results/evaluation.json
 ```
 
 The report separates deepset and jackhhao and includes malicious-class precision,
 recall, F1, macro-F1, false-positive rate, ROC-AUC, confusion counts, and per-prompt
 inference latency. Latency includes text feature or embedding generation and prediction,
 but excludes model loading. Cross-dataset duplicate prompts are represented by whichever
-source the importer retained.
+source the importer retained. The Dockerfile copies `results/` into `/app/results/`,
+so the saved evaluation is available at `/app/results/evaluation.json` inside the
+dashboard container after rebuilding the shared image and recreating the container.
 
 ## Simple guard latency and throughput test
 
