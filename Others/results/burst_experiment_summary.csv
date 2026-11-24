@@ -1,0 +1,3 @@
+role,source,sent,p10_allow,p10_block,first_blocked_index,trigger_window_s,trigger_threshold,cooldown_s,p7_allow,p7_block,p7_review,mean_p10_latency_ms,max_p10_latency_ms
+control,burst-20261122T140753Z-f46d70-198.51.100.10,5,5,0,,,,,4,0,1,282.784,869.153
+attacker,burst-20261122T140753Z-f46d70-198.51.100.66,20,5,15,6,10,6,300.0,4,15,1,1495.907,2574.928

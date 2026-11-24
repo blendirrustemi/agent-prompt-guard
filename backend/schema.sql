@@ -65,7 +65,8 @@ CREATE TABLE IF NOT EXISTS throttle_decisions (
     source TEXT NOT NULL,
     action TEXT NOT NULL CHECK (action IN ('allow', 'block')),
     reason TEXT,                    -- 'burst_detected' | 'source_blocked' | NULL for allow
-    window_count INTEGER NOT NULL CHECK (window_count >= 0),  -- prompts from this source in the window, incl. this one
+    -- The deciding P9 window (see `windows`): prompts from this source in it, incl. this one.
+    window_count INTEGER NOT NULL CHECK (window_count >= 0),
     window_seconds INTEGER NOT NULL CHECK (window_seconds > 0),
     threshold INTEGER NOT NULL CHECK (threshold > 0),
     blocked_until TIMESTAMPTZ,      -- set while the source is blocked
@@ -128,6 +129,9 @@ ALTER TABLE guard_results ADD COLUMN IF NOT EXISTS p5_status TEXT;
 ALTER TABLE guard_results ADD COLUMN IF NOT EXISTS p5_feature_version TEXT;
 ALTER TABLE guard_results ADD COLUMN IF NOT EXISTS p5_processed_at TIMESTAMPTZ;
 ALTER TABLE guard_results ADD COLUMN IF NOT EXISTS p5_sequence BIGINT;
+-- P9 elastic windows (Zhu & Shasha, KDD 2003): [{seconds, count, threshold}, ...], shortest first.
+-- Rows stored before elastic windows keep '[]'; their single window is in the columns above.
+ALTER TABLE throttle_decisions ADD COLUMN IF NOT EXISTS windows JSONB NOT NULL DEFAULT '[]'::jsonb;
 
 CREATE INDEX IF NOT EXISTS prompts_created_at_idx ON prompts (created_at DESC);
 CREATE INDEX IF NOT EXISTS throttle_decisions_source_time_idx ON throttle_decisions (source, event_time DESC);

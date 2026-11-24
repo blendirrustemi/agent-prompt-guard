@@ -1,4 +1,4 @@
-"""P9 + P10 worker: prompts_raw -> burst window -> rate limiter -> PostgreSQL + `throttle_decisions`.
+"""P9 + P10 worker: prompts_raw -> elastic burst windows -> rate limiter -> PostgreSQL + `throttle_decisions`.
 
 Runs beside the intake consumer in its own consumer group. For each raw prompt it stores the
 decision, publishes it for P7 (keyed by prompt_id), and only then commits the Kafka offset.
@@ -22,7 +22,7 @@ from backend.intake.events import validate_raw_event
 from backend.intake.producer import create_producer, flush_or_raise, publish_event
 from backend.intake.topics import PROMPTS_RAW, THROTTLE_DECISIONS, bootstrap_servers
 
-from .burst import BurstDetector
+from .burst import DEFAULT_WINDOWS, BurstDetector, validate_windows
 from .rate_limiter import RateLimiter
 from .throttle_events import build_throttle_event, event_from_stored
 
@@ -35,6 +35,21 @@ def env_int(name, default):
     if value <= 0:
         raise ValueError(f"{name} must be a positive integer.")
     return value
+
+
+def parse_windows(value):
+    """Parse BURST_WINDOWS, e.g. "10:6,60:10,600:40", into validated (seconds, threshold) pairs."""
+    try:
+        pairs = [tuple(int(part) for part in item.split(":")) for item in value.split(",") if item.strip()]
+        if any(len(pair) != 2 for pair in pairs):
+            raise ValueError
+    except ValueError:
+        raise ValueError(f"BURST_WINDOWS must look like '10:6,60:10,600:40' (seconds:threshold), got {value!r}.") from None
+    return validate_windows(pairs)
+
+
+def describe_windows(windows):
+    return ", ".join(f"{seconds}s:{threshold}" for seconds, threshold in windows)
 
 
 def publish_decision(producer, event, timeout=10):
@@ -72,8 +87,9 @@ def process_message(consumer, producer, message, database_url, detector, limiter
         stored = db.save_throttle_decision(database_url, build_throttle_event(decision))
         if decision.burst_started:
             LOGGER.warning(
-                "Burst from source %s: %d prompts in %ds; blocked until %s",
-                decision.source, decision.window_count, decision.window_seconds, decision.blocked_until.isoformat(),
+                "Burst from source %s: %d prompts in %ds >= %d; blocked until %s",
+                decision.source, decision.window_count, decision.window_seconds, decision.threshold,
+                decision.blocked_until.isoformat(),
             )
     # Redelivery re-publishes the first stored decision unchanged.
     event = event_from_stored(stored)
@@ -89,10 +105,8 @@ def main():
     load_dotenv(Path(__file__).resolve().parents[2] / ".env")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     database_url = os.getenv("DATABASE_URL", "postgresql://localhost:5432/pijd")
-    detector = BurstDetector(
-        window_seconds=env_int("BURST_WINDOW_SECONDS", 60),
-        threshold=env_int("BURST_THRESHOLD", 10),
-    )
+    configured = os.getenv("BURST_WINDOWS", "").strip()
+    detector = BurstDetector(parse_windows(configured) if configured else DEFAULT_WINDOWS)
     limiter = RateLimiter(cooldown_seconds=env_int("BURST_COOLDOWN_SECONDS", 300))
 
     consumer = Consumer({
@@ -117,8 +131,8 @@ def main():
             LOGGER.info("Restored block for source %s until %s", source, blocked_until.isoformat())
         consumer.subscribe([PROMPTS_RAW], on_assign=lambda client, partitions: mark_ready("burst"))
         LOGGER.info(
-            "Consuming %s as %s (window %ds, threshold %d, cooldown %ds)",
-            PROMPTS_RAW, GROUP_ID, detector.window_seconds, detector.threshold, limiter.cooldown_seconds,
+            "Consuming %s as %s (elastic windows %s, cooldown %ds)",
+            PROMPTS_RAW, GROUP_ID, describe_windows(detector.windows), limiter.cooldown_seconds,
         )
         while running:
             message = consumer.poll(1.0)

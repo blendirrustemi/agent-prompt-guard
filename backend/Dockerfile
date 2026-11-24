@@ -9,5 +9,6 @@ RUN pip install --no-cache-dir --timeout 120 --index-url https://download.pytorc
     && pip install --no-cache-dir --timeout 120 -r backend/requirements.txt
 COPY backend backend
 COPY frontend frontend
+COPY results results
 
 CMD ["python", "-m", "flask", "--app", "backend.app", "run", "--host", "0.0.0.0", "--port", "5050"]

@@ -1,10 +1,18 @@
 # Developer guide
 
-[README](../README.md) | [Project report](project_report.md)
+[README](../../README.md) | [Project report](project_report.md)
+
+**Repository cleanup:** `Others/backend/` was deleted. Commands below that use
+`Others.backend` modules or `Others/backend/` paths are historical references and
+cannot run from this checkout. This includes backend tests, training, dataset imports,
+evaluation tools, and the demo guard stub. The application and active Batch 2/3 models remain available.
+The frontend tests under `Others/frontend/` were also removed; their commands below are historical references.
+The dashboard tests updated on main are retained in `backend/tests/test_dashboard.py`; run them with
+`python -m unittest discover -s backend/tests -p test_dashboard.py -v` in an environment with the runtime dependencies.
 
 This guide contains detailed setup, commands, interfaces, configuration, and troubleshooting.
 For the purpose and design of the system, see the [system architecture](project_report.md#system-architecture).
-Run all shell commands from the **repository root**, even though this guide is in `docs/`.
+Run all shell commands from the **repository root**, even though this guide is in `Others/docs/`.
 Host-side Python commands use the relevant runtime or batch environment; full Compose uses its internal service addresses.
 
 ## Contents
@@ -308,6 +316,14 @@ The encoder and Batch 3 attack-type classifier are unchanged.
 The `burst` service (`python -m backend.stream.burst_worker`, group `pijd-burst-v1`) reads `prompts_raw` beside the intake consumer.
 For window and cooldown behaviour, see [P9/P10 in the report](project_report.md#p9p10-burst-detection-and-rate-limiting).
 
+P9 uses elastic bursts ([Zhu & Shasha, 2003](https://doi.org/10.1145/956750.956789)): several window
+sizes, each with its own threshold. Configure them with `BURST_WINDOWS` as comma-separated
+`seconds:threshold` pairs, shortest first, with thresholds increasing (default `10:6,60:10,600:40`).
+A source is blocked for `BURST_COOLDOWN_SECONDS` (default 300) as soon as any window reaches its
+threshold. A malformed value stops the worker at startup with an error. The old
+`BURST_WINDOW_SECONDS` and `BURST_THRESHOLD` settings are no longer read; `BURST_WINDOWS=60:10`
+reproduces the previous single-window behaviour.
+
 For every prompt the worker stores one row in the `throttle_decisions` table, publishes the same
 decision to the `throttle_decisions` topic (keyed by `prompt_id`), then commits its offset.
 P7 consumes each event: `action: "block"` overrides classifier routing immediately, while
@@ -315,24 +331,32 @@ P7 consumes each event: `action: "block"` overrides classifier routing immediate
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "prompt_id": "UUID",
   "source": "source_01",
   "action": "block",
   "reason": "burst_detected",
-  "window_count": 10,
-  "window_seconds": 60,
-  "threshold": 10,
-  "blocked_until": "2026-11-10T12:05:09+00:00",
+  "window_count": 6,
+  "window_seconds": 10,
+  "threshold": 6,
+  "windows": [
+    {"seconds": 10, "count": 6, "threshold": 6},
+    {"seconds": 60, "count": 6, "threshold": 10},
+    {"seconds": 600, "count": 6, "threshold": 40}
+  ],
+  "blocked_until": "2026-11-10T12:05:00.500000+00:00",
   "burst_started": true,
-  "event_time": "2026-11-10T12:00:09+00:00",
-  "decided_at": "2026-11-10T12:00:09.120000+00:00"
+  "event_time": "2026-11-10T12:00:00.500000+00:00",
+  "decided_at": "2026-11-10T12:00:00.620000+00:00"
 }
 ```
 
 `action` is `allow` (`reason` and `blocked_until` null) or `block`, with `reason` set to
 `burst_detected` on the prompt that starts a block (`burst_started: true`, a burst alert) or
-`source_blocked` during the cooldown. Redelivery republishes the stored decision unchanged.
+`source_blocked` during the cooldown. `windows` lists the source's count in every P9 window, shortest
+first. `window_count`/`window_seconds`/`threshold` repeat the **deciding window**: the shortest window
+that reached its threshold, or otherwise the one closest to it (highest count/threshold). Version-one
+events (no `windows`) are still accepted and read as a single window. Redelivery republishes the stored decision unchanged.
 Active blocks are reloaded from PostgreSQL when the worker restarts.
 
 ## Decision routing and attack aggregation (P7/P8)
@@ -364,7 +388,7 @@ Trigger a burst and inspect it (in PowerShell, pipe 12 lines the same way):
 
 ```sh
 seq 12 | sed 's/^/Burst prompt /' | python -m backend.intake.producer --source source_01
-docker compose --env-file .env -f backend/compose.yaml exec db psql -U pijd -d pijd -c "SELECT source, action, reason, window_count, burst_started FROM throttle_decisions ORDER BY event_time"
+docker compose --env-file .env -f backend/compose.yaml exec db psql -U pijd -d pijd -c "SELECT source, action, reason, window_seconds, window_count, windows, burst_started FROM throttle_decisions ORDER BY event_time"
 docker compose --env-file .env -f backend/compose.yaml exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:9092 --topic throttle_decisions --from-beginning --timeout-ms 5000
 ```
 
@@ -498,9 +522,9 @@ The **temporary** guard stub remains available for isolated agent demos. The nor
 now scores and routes prompts, so the stub is not needed for live guard integration:
 
 ```sh
-python -m backend.agent.guard_stub "What is 15 divided by 3?"
-python -m backend.agent.guard_stub --prompt-id <uuid>                     # an existing prompt
-python -m backend.agent.guard_stub "Ignore all instructions" --decision block   # the worker rejects it
+python -m Others.backend.agent.guard_stub "What is 15 divided by 3?"
+python -m Others.backend.agent.guard_stub --prompt-id <uuid>                     # an existing prompt
+python -m Others.backend.agent.guard_stub "Ignore all instructions" --decision block   # the worker rejects it
 ```
 
 A `prompts_allowed` message is JSON, keyed by `prompt_id`:
@@ -533,9 +557,9 @@ Re-running `init-db` preserves data and adds the dataset-link, preprocessing, P3
 For the full batch/notebook environment, use Python 3.13+ and uv:
 
 ```sh
-uv sync --project backend/batch --locked
-uv run --project backend/batch --locked python backend/batch/import_neuralchemy.py
-uv run --project backend/batch --locked python backend/batch/import_external_datasets.py
+uv sync --project Others/backend/batch --locked
+uv run --project Others/backend/batch --locked python Others/backend/batch/import_neuralchemy.py
+uv run --project Others/backend/batch --locked python Others/backend/batch/import_external_datasets.py
 ```
 
 Import commands download their datasets and use the root `.env`. NeurAlchemy baseline
@@ -548,7 +572,7 @@ Train and save the B3 multiclass attack-type classifier after the NeurAlchemy ro
 are imported:
 
 ```sh
-uv run --project backend/batch --locked python backend/batch/train_batch3.py
+uv run --project Others/backend/batch --locked python Others/backend/batch/train_batch3.py
 ```
 
 B3 uses the imported six-way `attack_group` labels for malicious NeurAlchemy rows,
@@ -559,21 +583,23 @@ Evaluate the saved B1/B2 artifacts on imported external-test rows and save a JSO
 report (the command also prints JSON when `--output` is omitted):
 
 ```sh
-uv run --project backend/batch --locked python -m backend.batch.evaluation --output evaluation.json
+uv run --project Others/backend/batch --locked python -m Others.backend.batch.evaluation --output results/evaluation.json
 ```
 
 The report separates deepset and jackhhao and includes malicious-class precision,
 recall, F1, macro-F1, false-positive rate, ROC-AUC, confusion counts, and per-prompt
 inference latency. Latency includes text feature or embedding generation and prediction,
 but excludes model loading. Cross-dataset duplicate prompts are represented by whichever
-source the importer retained.
+source the importer retained. The Dockerfile copies `results/` into `/app/results/`,
+so the saved evaluation is available at `/app/results/evaluation.json` inside the
+dashboard container after rebuilding the shared image and recreating the container.
 
 ## Simple guard latency and throughput test
 
 With the guard services running and NeurAlchemy imported, run from the project root:
 
 ```sh
-python -m backend.tests.guard_benchmark
+python -m Others.backend.tests.guard_benchmark
 ```
 
 This sends three warm-up prompts, then the same 20 short NeurAlchemy test prompts
@@ -583,7 +609,7 @@ Flask/browser overhead, agent execution and human review are excluded. It does
 not train models or change thresholds. Allowed prompts follow the normal agent
 path if the agent worker is running; its execution time is excluded from the timer.
 
-The script writes `results/guard_latency_summary.csv` and prints a summary table.
+The script writes `Others/results/guard_latency_summary.csv` and prints a summary table.
 Only the summary is saved; per-prompt results are kept in memory for calculating the
 statistics. Running it again replaces the summary CSV.
 Throughput is completed decisions divided by
@@ -595,9 +621,9 @@ To run inside Docker without installing host Python dependencies, copy the curre
 script into an existing consumer container and export the summary to the project root:
 
 ```sh
-docker compose --env-file .env -f backend/compose.yaml cp backend/tests/guard_benchmark.py consumer:/app/backend/tests/guard_benchmark.py
-docker compose --env-file .env -f backend/compose.yaml exec -T consumer python -m backend.tests.guard_benchmark --output /app/guard_latency_summary.csv
-docker compose --env-file .env -f backend/compose.yaml cp consumer:/app/guard_latency_summary.csv .
+docker compose --env-file .env -f backend/compose.yaml cp Others consumer:/app/Others
+docker compose --env-file .env -f backend/compose.yaml exec -T consumer python -m Others.backend.tests.guard_benchmark --output /app/guard_latency_summary.csv
+docker compose --env-file .env -f backend/compose.yaml cp consumer:/app/guard_latency_summary.csv Others/results/
 ```
 
 ## Burst detection experiment
@@ -605,11 +631,11 @@ docker compose --env-file .env -f backend/compose.yaml cp consumer:/app/guard_la
 With the guard services running (burst worker, consumer and router), run from the project root:
 
 ```sh
-python -m backend.tests.burst_experiment
+python -m Others.backend.tests.burst_experiment
 ```
 
 A control source first sends 5 prompts at 1 per second. Then an attacker source sends 20 prompts
-at 10 per second, about 2 seconds in total, well inside the 60-second P9 window. Both use simulated
+at 10 per second, about 2 seconds in total, well inside even the shortest (10-second) P9 window. Both use simulated
 documentation IPs (`198.51.100.10` and `198.51.100.66`) prefixed with a per-run ID, so a cooldown
 left over from an earlier run cannot affect a new one. The prompts are short calculator and course
 questions; the final P7 reason shows whether a block came from throttling (`throttle_*`) or from the model score.
@@ -619,31 +645,33 @@ questions; the final P7 reason shows whether a block came from throttling (`thro
 | `--count`, `--rate` | Attacker prompts and prompts/second; defaults 20 and 10 |
 | `--control-count`, `--control-rate` | Control prompts and prompts/second; defaults 5 and 1 |
 | `--timeout` | Seconds to wait for P10 and P7 decisions after sending; default 60 |
-| `--output-dir` | Where to write the CSV files; default `results/` |
+| `--output-dir` | Where to write the CSV files; default `Others/results/` |
 
 The script waits until every prompt has a `throttle_decisions` row and a final `guard_results`
-decision. It reads the threshold, window and cooldown from the stored rows, so it also works with
-non-default `BURST_*` settings. It then prints PASS/FAIL for five checks and exits with 1 if any fails:
+decision. It takes the trigger prompt, the window that fired, its threshold and the cooldown from the
+stored rows, so it also works with non-default `BURST_*` settings. It then prints PASS/FAIL for five
+checks and exits with 1 if any fails. With the default windows, the trigger is prompt 6 (10 s window):
 
-1. Attacker prompts 1 to threshold−1 are P10 `allow`, with P9 `window_count` 1 to threshold−1.
-2. Attacker prompt number `threshold` is `block` / `burst_detected` with `burst_started` true.
+1. Attacker prompts before the trigger are P10 `allow`, and every P9 window counts each of them (count = prompt number).
+2. The trigger prompt is `block` / `burst_detected` with `burst_started` true, and the window that fired has reached its threshold.
 3. Every later attacker prompt is `block` / `source_blocked` with the same `blocked_until`.
 4. P7 finalizes every P10-blocked prompt as `block` with a `throttle_*` reason.
 5. No control prompt is throttled.
 
-It writes `results/burst_experiment_prompts.csv` (one row per prompt: P9 window count, P10 action,
-reason and latency, P7 decision and reason, P4 score) and `results/burst_experiment_summary.csv`
+It writes `Others/results/burst_experiment_prompts.csv` (one row per prompt: the count in every P9 window
+(`p9_count_10s`, `p9_count_60s`, `p9_count_600s`), the deciding window, P10 action,
+reason and latency, P7 decision and reason, P4 score) and `Others/results/burst_experiment_summary.csv`
 (one row per source), and prints both as tables. Running it again replaces both files.
 Allowed prompts follow the normal agent path if the agent worker is running.
 Like the latency benchmark, it is run manually and is not picked up by `test_*.py` discovery.
 
-To run inside Docker, copy the script into the consumer container and export the results:
+To run inside Docker, copy the supporting files into the consumer container and export the results:
 
 ```sh
-docker compose --env-file .env -f backend/compose.yaml cp backend/tests/burst_experiment.py consumer:/app/backend/tests/burst_experiment.py
-docker compose --env-file .env -f backend/compose.yaml exec -T consumer python -m backend.tests.burst_experiment --output-dir /app/burst_results
-docker compose --env-file .env -f backend/compose.yaml cp consumer:/app/burst_results/burst_experiment_prompts.csv results/
-docker compose --env-file .env -f backend/compose.yaml cp consumer:/app/burst_results/burst_experiment_summary.csv results/
+docker compose --env-file .env -f backend/compose.yaml cp Others consumer:/app/Others
+docker compose --env-file .env -f backend/compose.yaml exec -T consumer python -m Others.backend.tests.burst_experiment --output-dir /app/burst_results
+docker compose --env-file .env -f backend/compose.yaml cp consumer:/app/burst_results/burst_experiment_prompts.csv Others/results/
+docker compose --env-file .env -f backend/compose.yaml cp consumer:/app/burst_results/burst_experiment_summary.csv Others/results/
 ```
 ## Dashboards
 
@@ -663,11 +691,11 @@ Implemented pages:
 
 | Page | Graph | Data |
 |---|---|---|
-| Nándor: Burst detection & throttling | P9's sliding-window count per source over time, with the burst threshold (dashed) and burst starts (red triangles). Metrics: sources seen, prompts blocked by P10, bursts, sources blocked now. | `throttle_decisions` |
+| Nándor: Burst detection & throttling | P9's count per source over time in one elastic window (a **P9 window** selector switches between 10, 60 and 600 s), with that window's threshold (dashed) and burst starts (red triangles; the tooltip says which window fired). Metrics: sources seen, prompts blocked by P10, bursts, sources blocked now. | `throttle_decisions` (`windows`) |
 | Nándor: Agent tool use | Calls per tool (`calculator`, `lookup_course_info`) plus completed runs that used no tool. Metrics: runs, completed, share using a tool, mean latency. | `agent_runs.tool_calls` |
 
 Both pages have a time-range selector, and the burst page lets you pick sources (default: the 8 most active).
-Run `python -m backend.tests.burst_experiment` to generate burst data to look at.
+Run `python -m Others.backend.tests.burst_experiment` to generate burst data to look at.
 
 To add your page:
 
@@ -691,8 +719,8 @@ Live scorer and Ollama checks remain explicitly enabled separately.
 Fast checks need only the runtime dependencies:
 
 ```sh
-python -m unittest discover -s backend/tests -v
-node --test frontend/tests/app.test.cjs
+python -m unittest discover -s Others/backend/tests -v
+node --test Others/frontend/tests/app.test.cjs
 ```
 
 P3/P4 unit tests inject encoder/classifier fixtures and never download models. The artifact
@@ -700,7 +728,7 @@ check loads only the small trusted classifier files. To run the explicit real-Mi
 check (including the review handling for over-token prompts), use a dedicated initialized test database:
 
 ```sh
-TEST_LIVE_SCORER=1 TEST_DATABASE_URL=postgresql://pijd:pijd@127.0.0.1:55432/pijd_test python -m unittest backend.tests.test_scoring.LiveScoringTests -v
+TEST_LIVE_SCORER=1 TEST_DATABASE_URL=postgresql://pijd:pijd@127.0.0.1:55432/pijd_test python -m unittest Others.backend.tests.test_scoring.LiveScoringTests -v
 ```
 
 That opt-in check can download MiniLM if it is not already cached and prints warm inference
@@ -710,14 +738,14 @@ Database and Kafka checks are opt-in. Create a dedicated test database once, the
 
 ```sh
 docker compose --env-file .env -f backend/compose.yaml exec db createdb -U pijd pijd_test
-TEST_DATABASE_URL=postgresql://pijd:pijd@127.0.0.1:55432/pijd_test TEST_KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9094 python -m unittest discover -s backend/tests -v
+TEST_DATABASE_URL=postgresql://pijd:pijd@127.0.0.1:55432/pijd_test TEST_KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9094 python -m unittest discover -s Others/backend/tests -v
 ```
 
 Database checks remove their fixture rows. Kafka round-trip checks publish fixture
 records to `prompts_raw` and `prompts_allowed`. Batch checks use local examples without downloads:
 
 ```sh
-TEST_DATABASE_URL=postgresql://pijd:pijd@127.0.0.1:55432/pijd_test uv run --project backend/batch --locked python -m unittest discover -s backend/tests -p test_batch_import.py -v
+TEST_DATABASE_URL=postgresql://pijd:pijd@127.0.0.1:55432/pijd_test uv run --project Others/backend/batch --locked python -m unittest discover -s Others/backend/tests -p test_batch_import.py -v
 ```
 
 The combined runtime suite also checks the agent's two tools, its stored-decision gate,
@@ -730,8 +758,9 @@ redelivery, and replay through real Kafka and the consumer into PostgreSQL. They
 do not download datasets/models or change existing browser behavior.
 
 If a host's Windows Application Control blocks the Kafka client DLL, run the runtime
-suite inside the existing Linux container instead:
+suite inside the existing Linux container instead. Copy `Others/` first because it is excluded from the application image:
 
 ```sh
-docker compose --env-file .env -f backend/compose.yaml exec -e TEST_DATABASE_URL=postgresql://pijd:pijd@db:5432/pijd_test -e TEST_KAFKA_BOOTSTRAP_SERVERS=kafka:9092 web python -m unittest discover -s backend/tests -v
+docker compose --env-file .env -f backend/compose.yaml cp Others web:/app/Others
+docker compose --env-file .env -f backend/compose.yaml exec -e TEST_DATABASE_URL=postgresql://pijd:pijd@db:5432/pijd_test -e TEST_KAFKA_BOOTSTRAP_SERVERS=kafka:9092 web python -m unittest discover -s Others/backend/tests -v
 ```
