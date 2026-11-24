@@ -2,9 +2,10 @@
 
 [README](../../README.md) | [Developer guide](developer-guide.md) | [Research-paper notes](research-papers.md)
 
-**Archive note:** This report describes the completed experiments. The supporting backend
-tools, notebooks, tests, baseline models, and training history under `Others/backend/`
-were subsequently deleted. References to those files describe the historical setup.
+**Archive note:** This report describes the completed experiments. Supporting batch tools,
+notebooks, data, model snapshots, and training history are restored in `Others/Models/`.
+The latest P7 review/Batch 4 workflow remains in `backend/batch/`. References to removed
+older tests describe the historical setup.
 
 ## Abstract
 
@@ -195,7 +196,7 @@ All prompts fell inside every window, so all three windows counted the attacker'
 
 ### Retraining before and after
 
-Batch 4 was trained using the repository's reviewed-label CSV, which had 140 rows (70 per label) and validated on 60 rows (30 per label). The candidate strictly improved over the baseline, so the pipeline promoted it and saved the run report, previous classifier, and previous config under `Others/backend/batch/models/batch4_runs/promoted_20261121T121133Z/`. This validation result applies only to the reviewed sample and does not replace untouched test or external evaluation.
+Batch 4 was trained using the repository's reviewed-label CSV, which had 140 rows (70 per label) and validated on 60 rows (30 per label). The candidate strictly improved over the baseline, so the pipeline promoted it and saved the run report, previous classifier, and previous config under `Others/Models/models/batch4_runs/promoted_20261121T121133Z/`. This validation result applies only to the reviewed sample and does not replace untouched test or external evaluation.
 
 The confusion matrices below use true labels as rows and predicted labels as columns, ordered benign then malicious:
 
@@ -204,7 +205,7 @@ The confusion matrices below use true labels as rows and predicted labels as col
 | Current | 0.6011 | `[[9, 21], [0, 30]]` |
 | Batch 4 candidate (promoted) | 0.8496 | `[[24, 6], [3, 27]]` |
 
-`Others/backend/batch/models/batch4_runs/` is where the reports, including label counts and candidate training metrics are located. Because the reviewed set is small, the promotion metric reflects model selection and should not be treated as an unbiased final test estimate.
+`Others/Models/models/batch4_runs/` is where the reports, including label counts and candidate training metrics are located. Because the reviewed set is small, the promotion metric reflects model selection and should not be treated as an unbiased final test estimate.
 
 When data distributions change, concept-drift research treats retraining as one way to adapt ([Lu et al., 2019](https://doi.org/10.1109/TKDE.2018.2876857)). P6's score-distribution alert does not trigger retraining automatically. The earlier Batch 4 promotion rule compared only a selected review sample; the updated workflow also gates candidates on untouched NeurAlchemy and external evaluations.
 
