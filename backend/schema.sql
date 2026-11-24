@@ -17,6 +17,15 @@ CREATE TABLE IF NOT EXISTS guard_results (
     checked_at TIMESTAMPTZ
 );
 
+-- Human labels attached to the exact prompts routed by P7 to review.
+CREATE TABLE IF NOT EXISTS prompt_reviews (
+    prompt_id UUID PRIMARY KEY REFERENCES prompts(id) ON DELETE CASCADE,
+    label SMALLINT NOT NULL CHECK (label IN (0, 1)),
+    reviewed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    reviewer TEXT
+);
+CREATE INDEX IF NOT EXISTS prompt_reviews_reviewed_at_idx ON prompt_reviews (reviewed_at, prompt_id);
+
 CREATE TABLE IF NOT EXISTS dataset_prompts (
     -- Importers may pass a stable UUID (e.g. uuid5 of dataset/split/row) so re-imports skip existing rows.
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

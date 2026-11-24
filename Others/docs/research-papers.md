@@ -27,9 +27,9 @@ Applies sentence embeddings (including all-MiniLM-L6-v2) with Logistic Regressio
 
 ## 3. PromptGuard: A Structured Framework for Injection-Resilient Language Models (2026)
 
-**Paper**: https://doi.org/10.1038/s41598-025-31086-y 
+**Paper**: https://doi.org/10.1038/s41598-025-31086-y
 
-**Relevant project components**: 
+**Relevant project components**:
 - Pipeline 3: Stateful Similarity Probing
 
 **Reason for including:**
@@ -44,7 +44,7 @@ This paper looks into a multi-layered framework focused on detecting and prevent
 
 **Source:** [ACL Anthology](https://aclanthology.org/2023.emnlp-demo.40/). **DOI:** [10.18653/v1/2023.emnlp-demo.40](https://doi.org/10.18653/v1/2023.emnlp-demo.40).
 
-This paper presents model-independent programmable runtime rails and pre-execution input moderation for LLM applications. This architecture motivates P7's role as a gate before agent execution. Their discussion of runtime overhead and specialized execution-rail models also gives broad motivation for Batch 1 as a lightweight local check, though the paper does not evaluate TF-IDF or Logistic Regression.   
+This paper presents model-independent programmable runtime rails and pre-execution input moderation for LLM applications. This architecture motivates P7's role as a gate before agent execution. Their discussion of runtime overhead and specialized execution-rail models also gives broad motivation for Batch 1 as a lightweight local check, though the paper does not evaluate TF-IDF or Logistic Regression.
 
 ## 5. A Sketch Framework for Approximate Data Stream Processing in Sliding Windows (2023)
 
@@ -54,7 +54,7 @@ This paper presents model-independent programmable runtime rails and pre-executi
 
 **Source:** [IEEE Xplore](https://doi.org/10.1109/TKDE.2022.3151140).
 
-Formalizes sliding-window stream queries, including Top-K frequency queries. That formulation supports the concept behind P8's rolling Top-10 pattern summaries. Our implementation uses exact aggregation; it does not implement the paper's approximate sketch algorithm or claim its efficiency guarantees.   
+Formalizes sliding-window stream queries, including Top-K frequency queries. That formulation supports the concept behind P8's rolling Top-10 pattern summaries. Our implementation uses exact aggregation; it does not implement the paper's approximate sketch algorithm or claim its efficiency guarantees.
 
 ## 6. Learning under Concept Drift: A Review (2019)
 
@@ -84,7 +84,7 @@ Defines elastic bursts: a stream is monitored over several sliding-window sizes 
 
 **Source:** [arXiv:2210.03629](https://arxiv.org/abs/2210.03629).
 
-Introduces agents that interleave reasoning with actions, such as tool or API calls, and use each result to decide the next step. Acting on looked-up information reduces hallucination. Our agent follows this loop: LangChain's `create_agent` lets the model call `calculator` or `lookup_course_info`, reads the result, and continues until it can answer. The agent tool-use dashboard counts these actions per tool. 
+Introduces agents that interleave reasoning with actions, such as tool or API calls, and use each result to decide the next step. Acting on looked-up information reduces hallucination. Our agent follows this loop: LangChain's `create_agent` lets the model call `calculator` or `lookup_course_info`, reads the result, and continues until it can answer. The agent tool-use dashboard counts these actions per tool.
 ## 7. Perspectives on Incorporating Expert Feedback into Model Updates (2023)
 
 **Authors:** Valerie Chen, Umang Bhatt, Hoda Heidari, Adrian Weller, and Ameet Talwalkar.

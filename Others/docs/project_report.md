@@ -26,9 +26,9 @@ We used three datasets from Hugging Face. NeurAlchemy was our main dataset for t
 
 ### NeurAlchemy
 
-The [NeurAlchemy Prompt Injection Dataset](https://huggingface.co/datasets/neuralchemy/Prompt-injection-dataset) contains benign prompts as well as prompt-injection and jailbreak examples which were used to train the batch 1 and 2 binary classification models. The dataset also includes attack-category labels, which were used for batch 3's multiclass attack classifier. 
+The [NeurAlchemy Prompt Injection Dataset](https://huggingface.co/datasets/neuralchemy/Prompt-injection-dataset) contains benign prompts as well as prompt-injection and jailbreak examples which were used to train the batch 1 and 2 binary classification models. The dataset also includes attack-category labels, which were used for batch 3's multiclass attack classifier.
 We kept the dataset's original training, validation, and test splits. Initially, we planned to use only rows marked as neuralchemy_v1 in the source column. However, we later expanded this to include all sources, giving the models a wider variety of prompts to learn from.
-For Batch 3, we grouped the original attack categories into six broader families: instruction manipulation, jailbreak/persona manipulation, obfuscation, information extraction, indirect injection/agent manipulation, and adversarial attacks. This reduced the number of separate labels and brought related attack techniques together. 
+For Batch 3, we grouped the original attack categories into six broader families: instruction manipulation, jailbreak/persona manipulation, obfuscation, information extraction, indirect injection/agent manipulation, and adversarial attacks. This reduced the number of separate labels and brought related attack techniques together.
 
 ### External evaluation datasets
 
@@ -72,6 +72,7 @@ This label describes the suspected attack; it does not determine whether the pro
 
 Batch 4 is an explicit offline command using reviewed benign/malicious labels supplied as a CSV, with rows assigned to training or validation. This follows a model-update pattern in which expert feedback is incorporated as labelled data and used to retrain a supervised model; the CSV workflow and promotion rule here are project-specific choices ([Chen et al., 2023](https://doi.org/10.1016/j.patter.2023.100780)). Promotion replaces the active Batch 2 classifier only if the candidate's validation macro-F1 is strictly higher than the current classifier's score on the same labelled validation rows. 
 
+The historical Batch 4 run below used a separately prepared reviewed-label CSV; it was not sourced from P7's review queue and therefore does not demonstrate the end-to-end review loop. That CSV had 140 rows (70 per label) and validated on 60 rows (30 per label). The existing classifier scored a macro-F1 of 0.6011, while the candidate scored 0.8496 on the same validation split. The existing model produced confusion matrix `[[9, 21], [0, 30]]`, and the candidate produced `[[24, 6], [3, 27]]` with true labels as rows and predicted labels as columns (benign, malicious). The candidate strictly improved over the baseline, so the pipeline promoted it and saved the run report, previous classifier, and previous config under `backend/batch/models/batch4_runs/promoted_20261121T121133Z/`. This validation result applies only to that reviewed sample and does not replace untouched test or external evaluation.
 Operational instructions are in the [developer guide](developer-guide.md#batch-4-reviewed-label-retraining).
 
 ### P1/P2: ingestion, preprocessing and source enrichment
@@ -148,6 +149,15 @@ The saved Batch 1 and Batch 2 external-test results are recorded in [evaluation.
 
 Batch 3 achieved a macro-F1 of 0.76 on the NeurAlchemy test split.
 
+The historical Batch 4 run compared both models using the separate reviewed-label CSV on the same 60 validation prompts (30 benign and 30 malicious). The current model scored macro-F1 0.6011, while the candidate scored 0.8496 and was promoted without the P7 queue provenance or untouched regression gates now required by the retraining workflow. These figures are historical and do not establish that the candidate generalizes. The confusion matrices use true labels as rows and predictions as columns, ordered benign then malicious:
+
+| Model | Validation macro-F1 | Confusion matrix |
+| --- | ---: | --- |
+| Current | 0.6011 | `[[9, 21], [0, 30]]` |
+| Historical Batch 4 candidate (promoted) | 0.8496 | `[[24, 6], [3, 27]]` |
+
+`backend/batch/models/batch4_runs/` stores reports, label counts, and candidate metrics. The old validation score reflects model selection on a small, uncertain sample and is not an unbiased test estimate.
+
 ### Guard latency and throughput
 
 The guard latency and throughput were tested using the same 20 short NeurAlchemy test prompts (10 benign and 10 malicious) at target rates of 1 and 5 prompts per second. Latency was measured from just before publishing to Kafka until the recorded final guard decision, excluding agent execution. Throughput was completed decisions divided by the time from the first submission to the last decision, including the sending intervals. The following is a summary of the results:
@@ -197,7 +207,7 @@ The confusion matrices below use true labels as rows and predicted labels as col
 
 `Others/backend/batch/models/batch4_runs/` is where the reports, including label counts and candidate training metrics are located. Because the reviewed set is small, the promotion metric reflects model selection and should not be treated as an unbiased final test estimate.
 
-When data distributions change, concept-drift research treats retraining as one way to adapt ([Lu et al., 2019](https://doi.org/10.1109/TKDE.2018.2876857)), which gives context for comparing the reviewed-label candidate with the active model. In this project, Batch 4 was run manually on reviewed data. P6's score-distribution alert does not trigger retraining automatically, and the strict macro-F1 promotion rule is our own selection policy.
+When data distributions change, concept-drift research treats retraining as one way to adapt ([Lu et al., 2019](https://doi.org/10.1109/TKDE.2018.2876857)). P6's score-distribution alert does not trigger retraining automatically. The earlier Batch 4 promotion rule compared only a selected review sample; the updated workflow also gates candidates on untouched NeurAlchemy and external evaluations.
 
 ## References
 

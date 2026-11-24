@@ -38,7 +38,8 @@ pages = {
         st.Page("views/emma_model_evaluation.py", title="Model evaluation", url_path="emma")
     ],
     "Francesca (P5–P6)": [
-        st.Page("views/francesca_anomaly_drift.py", title="Anomaly & score drift", url_path="francesca")
+        st.Page("views/francesca_anomaly_drift.py", title="Anomaly & score drift", url_path="francesca"),
+        st.Page("views/review_queue.py", title="P7 review queue", url_path="review-queue"),
     ],
     "Shahed (P7–P8)": [
         st.Page("views/shahed_attack_patterns.py", title="Attack patterns & decisions", url_path="shahed-attack-patterns")
