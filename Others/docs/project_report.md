@@ -2,9 +2,10 @@
 
 [README](../../README.md) | [Developer guide](developer-guide.md) | [Research-paper notes](research-papers.md)
 
-**Archive note:** This report describes the completed experiments. The supporting backend
-tools, notebooks, tests, baseline models, and training history under `Others/backend/`
-were subsequently deleted. References to those files describe the historical setup.
+**Archive note:** This report describes the completed experiments. Supporting batch tools,
+notebooks, data, model snapshots, and training history are restored in `Others/Models/`.
+The latest P7 review/Batch 4 workflow remains in `backend/batch/`. References to removed
+older tests describe the historical setup.
 
 ## Abstract
 
@@ -210,6 +211,21 @@ The burst test (`python -m Others.backend.tests.burst_experiment`, see the [deve
 | Attacker (10 prompts/s) | 20 | 5 | 15 | 6 | 10 s | 15 | 1495.91 |
 
 All prompts fell inside every window, so all three windows counted the attacker's prompts 1–5 identically, and P10 allowed them. At prompt 6 the 10-second window reached its threshold of 6, while the 60- and 600-second windows were still at 6 of 10 and 6 of 40. P9 detected the burst, and P10 blocked the source until 300 seconds after that prompt. Prompts 7–20 were blocked as `source_blocked` under the same block, and P7 finalized all 15 throttled prompts as `block` with a throttle reason. The control source, at most 5 prompts in 10 seconds, was never throttled. All five automated checks passed.
+
+### Retraining before and after
+
+Batch 4 was trained using the repository's reviewed-label CSV, which had 140 rows (70 per label) and validated on 60 rows (30 per label). The candidate strictly improved over the baseline, so the pipeline promoted it and saved the run report, previous classifier, and previous config under `Others/Models/models/batch4_runs/promoted_20261121T121133Z/`. This validation result applies only to the reviewed sample and does not replace untouched test or external evaluation.
+
+The confusion matrices below use true labels as rows and predicted labels as columns, ordered benign then malicious:
+
+| Model | Validation macro-F1 | Confusion matrix |
+| --- | ---: | --- |
+| Current | 0.6011 | `[[9, 21], [0, 30]]` |
+| Batch 4 candidate (promoted) | 0.8496 | `[[24, 6], [3, 27]]` |
+
+`Others/Models/models/batch4_runs/` is where the reports, including label counts and candidate training metrics are located. Because the reviewed set is small, the promotion metric reflects model selection and should not be treated as an unbiased final test estimate.
+
+When data distributions change, concept-drift research treats retraining as one way to adapt ([Lu et al., 2019](https://doi.org/10.1109/TKDE.2018.2876857)). P6's score-distribution alert does not trigger retraining automatically. The earlier Batch 4 promotion rule compared only a selected review sample; the updated workflow also gates candidates on untouched NeurAlchemy and external evaluations.
 
 ## References
 

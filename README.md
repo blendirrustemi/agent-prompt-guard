@@ -8,9 +8,12 @@ and routes each prompt to **allow**, **block**, or **review** before agent execu
 
 `backend/` and `frontend/` contain the application and its active Batch 2/3 models.
 `results/evaluation.json` supplies the saved results for the model-evaluation dashboard.
-`backend/tests/` contains the dashboard tests updated on main.
+`backend/tests/` contains the dashboard and Batch 4 review-workflow tests.
 `Others/` contains documentation, experiment results, and old temporary files.
-The archived backend tools, tests, notebooks, baseline models, and training history were removed.
+`Others/Models/` restores the batch data, notebooks, import/evaluation tools, training scripts,
+dependencies, saved model snapshots, and historical Batch 4 runs. Its training scripts
+write to `Others/Models/models/`; the active guard models remain in `backend/batch/models/`.
+The current P7 review export and Batch 4 retraining workflow remain in `backend/batch/`.
 Supporting files retain their original folder structure inside `Others/`.
 Local environments, configuration, PostgreSQL data, and model caches stay in place.
 `Others/` is excluded from Docker builds.
@@ -18,7 +21,7 @@ Local environments, configuration, PostgreSQL data, and model caches stay in pla
 ## Documentation
 
 - **[Project report](Others/docs/project_report.md)** - introduction, datasets, system architecture, and testing/experiment sections.
-- **[Developer guide](Others/docs/developer-guide.md)** - detailed setup, APIs, event contracts, configuration, dataset replay, and troubleshooting; includes historical instructions for removed backend tools.
+- **[Developer guide](Others/docs/developer-guide.md)** - detailed setup, APIs, event contracts, configuration, dataset replay, and troubleshooting; includes restored batch tools and historical instructions for removed tests and the demo stub.
 - **[Folder guide](Others/docs/folder-guide.md)** - explains what each folder contains.
 - **[Research-paper notes](Others/docs/research-papers.md)** - research papers used in this project and referenced in the project report.
 - **[Team work plan](Others/docs/work-plan.xlsx)** - planned tasks and assigned team members.
@@ -117,6 +120,17 @@ remain in named Docker volumes. **Do not use `down -v` if you want to keep those
 The Compose database does not import a standalone database from `tmp/postgres-dev/`.
 
 ## Development and experiments
+
+Use Python **3.13+** and **uv** for the restored batch/notebook environment:
+
+```sh
+uv sync --project Others/Models --locked
+uv run --project Others/Models --locked python Others/Models/import_neuralchemy.py
+uv run --project Others/Models --locked python -m Others.Models.evaluation --output Others/Models/evaluation.json
+```
+
+The old reviewed-label draft CSV is preserved as historical data. Use the current
+P7 review-queue export for the current Batch 4 workflow.
 
 - [Local Python setup](Others/docs/developer-guide.md#local-python-and-command-line-publishing)
 - [Dataset replay through the real guard](Others/docs/developer-guide.md#dataset-replay)
