@@ -59,19 +59,34 @@ def _read_artifacts(model_dir):
     fingerprint = hashlib.sha256()
     for name in ("batch2", "batch3"):
         config_path = model_dir / name / "config.json"
-        config = json.loads(config_path.read_text(encoding="utf-8"))
+        classifier_path = model_dir / name / "classifier.pkl"
+        bundle_path = model_dir / name / "active_bundle.pkl" if name == "batch2" else None
+        bundle_bytes = bundle_path.read_bytes() if bundle_path and bundle_path.is_file() else None
+        if bundle_bytes is not None:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                bundle = pickle.loads(bundle_bytes)
+            if (not isinstance(bundle, dict) or bundle.get("format_version") != 1
+                    or not isinstance(bundle.get("config"), dict)
+                    or not hasattr(bundle.get("classifier"), "predict_proba")):
+                raise ValueError("Batch 2 active model bundle is invalid.")
+            config = bundle["config"]
+            classifiers[name] = bundle["classifier"]
+            fingerprint.update(f"{name}/{bundle_path.name}\0".encode())
+            fingerprint.update(bundle_bytes)
+        else:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            for path in (config_path, classifier_path):
+                fingerprint.update(f"{name}/{path.name}\0".encode())
+                fingerprint.update(path.read_bytes())
+            # Only repository-owned model artifacts are loaded. Reject version mismatch warnings.
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                with classifier_path.open("rb") as file:
+                    classifiers[name] = pickle.load(file)
         for package, expected in config["package_versions"].items():
             if package in {"scikit-learn", "sentence-transformers", "numpy"} and version(package) != expected:
                 raise ValueError(f"{name} requires {package}=={expected}; installed {version(package)}.")
-        classifier_path = model_dir / name / "classifier.pkl"
-        for path in (config_path, classifier_path):
-            fingerprint.update(f"{name}/{path.name}\0".encode())
-            fingerprint.update(path.read_bytes())
-        # Only repository-owned model artifacts are loaded. Reject version mismatch warnings.
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            with classifier_path.open("rb") as file:
-                classifiers[name] = pickle.load(file)
         configs[name] = config
     b2, b3 = configs["batch2"], configs["batch3"]
     for field in ("encoder_name", "max_seq_length", "normalize_embeddings", "embedding_dimension"):

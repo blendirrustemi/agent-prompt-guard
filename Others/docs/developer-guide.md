@@ -277,21 +277,25 @@ with imported dataset prompts are excluded; duplicate review text is deduplicate
 before a deterministic hash-based split, and conflicting labels fail with an explanation.
 Only `score_in_review_band` prompts are exported. Truncated, failed-inference, and
 timeout reviews are excluded because the classifier did not score their full prompt.
-At least two unique eligible prompts per class are needed to create both splits.
+At least two unique eligible prompts per class are needed to create a structurally valid CSV. This is only enough to export: Batch 4 refuses to train unless the validation split has at least five reviewed prompts per class (ten total). The exporter puts 25% of each class in validation, so plan for at least 20 unique reviewed prompts per class.
 
 Run `python -m backend.batch.train_batch4 backend/batch/data/p7_reviewed_prompts.csv --no-promote` to
 compare first without changing the active model. The candidate trains on the original
 NeurAlchemy training split plus reviewed training prompts. Promotion requires a higher
-score on the review holdout and no macro-F1 regression on the untouched NeurAlchemy
-test, deepset, or jackhhao evaluation sets. The review holdout is drawn from prompts
+score on the review holdout and no macro-F1 regression on the held-out NeurAlchemy
+test, deepset, or jackhhao promotion-gate sets. Those sets influence model selection,
+so their candidate scores are not independent final evaluation results. The review holdout is drawn from prompts
 the current model found uncertain, so its score is a weak, biased adaptation signal;
-the untouched regression gates are the safety check. The regression tolerance is 0.0
+the promotion regression gates are the safety check. The regression tolerance is 0.0
 macro-F1 (ties pass; any drop fails). Gate scores use P4's 256-token coverage, with
 excluded long prompts counted in the report. The report also compares current and
 candidate P7 allow/review/block counts on the review holdout. Batch 4 verifies exported IDs,
 text, and labels against the current P7 queue before training. Every run writes a report
-under `backend/batch/models/batch4_runs/`; promoted runs also retain the previous
-classifier and config there. Stop the intake consumer before promotion.
+under `backend/batch/models/batch4_runs/`; promoted runs also retain the previous active
+model artifacts there. The active P4 classifier and its config are written together
+to `backend/batch/models/batch2/active_bundle.pkl` in one atomic replacement. P4 prefers
+that bundle and uses the original separate files until the first queue-based promotion.
+Stop the intake consumer before promotion so it reloads the active bundle on restart.
 
 The `dashboard` and `init` services use the shared Python image. To apply code and
 schema changes to the dashboard:
