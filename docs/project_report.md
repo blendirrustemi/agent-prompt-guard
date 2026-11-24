@@ -63,13 +63,13 @@ Batch 3 achieved a macro-F1 of 0.76 on the NeurAlchemy test split. During stream
 
 #### Batch 4: reviewed-label retraining
 
-Batch 4 is an explicit offline command using reviewed benign/malicious labels supplied as a CSV, with rows assigned to training or validation.
-Both splits must contain both labels; validation rows are never used to fit the candidate.
-The repository does not currently collect these labels in a review UI.
-Promotion replaces the active Batch 2 classifier only if the candidate's validation macro-F1 is strictly higher than the current classifier's score on the same labelled validation rows.
+Batch 4 starts from the original NeurAlchemy training split and adds eligible benign/malicious labels from prompts P7 routed to its review band. Reviewers label those prompt IDs in the dashboard queue; an exporter deduplicates normalized prompt text and creates a hash-based stratified train/validation CSV. Batch 4 verifies the IDs and labels against PostgreSQL before fitting, then records the source IDs in its run report.
+The queue holdout score is a weak, selection-biased adaptation signal because the current model selected those prompts as uncertain. Promotion also requires no macro-F1 regression on the untouched NeurAlchemy test, deepset, and jackhhao evaluation sets; those gates are reported separately. Validation rows are never used to fit the candidate.
+At the time of this report, the queue-based pipeline is implemented and unit-tested, but has not yet been demonstrated on human-labeled P7 review prompts. Exact normalized overlaps with imported dataset rows are excluded; semantic near-duplicates are not automatically detected and remain a limitation.
+The initial 2026-11-24 live eligibility check found 777 score-band queue prompts (379 unique normalized texts), all linked to imported dataset replays; after exact-overlap exclusion, zero were eligible for Batch 4 labeling/export. A subsequent manual submission reached `score_in_review_band` and was confirmed not to overlap the imported datasets. At the latest check, the live database contained 50 saved labels overall but only one unique export-eligible prompt (malicious), so a Batch 4 dry run was still not possible; both labels and at least two unique prompts per class are required just to export.
 The encoder and B3 classifier remain unchanged; P6 alerts request human consideration rather than automatically running or promoting B4.
 
-Batch 4 was trained using the repository's reviewed-label CSV, which had 140 rows (70 per label) and validated on 60 rows (30 per label). The existing classifier scored a macro-F1 of 0,6011, while the candidate scored 0.8496 on the same validation split. Additionally, the existing model produced the confusion matrix `[[9, 21], [0, 30]]`, and the candidate produced `[[24, 6], [3, 27]]` with true labels as rows and predicted labels as columns (benign, malicious). The candidate strictly improved over the baseline, so the pipeline promoted it and saved the run report, previous classifier, and previous config under `backend/batch/models/batch4_runs/promoted_20261121T121133Z/`. This validation result applies only to the reviewed sample and does not replace untouched test or external evaluation.
+The historical Batch 4 run below used a separately prepared reviewed-label CSV; it was not sourced from P7's review queue and therefore does not demonstrate the end-to-end review loop. That CSV had 140 rows (70 per label) and validated on 60 rows (30 per label). The existing classifier scored a macro-F1 of 0.6011, while the candidate scored 0.8496 on the same validation split. The existing model produced confusion matrix `[[9, 21], [0, 30]]`, and the candidate produced `[[24, 6], [3, 27]]` with true labels as rows and predicted labels as columns (benign, malicious). The candidate strictly improved over the baseline, so the pipeline promoted it and saved the run report, previous classifier, and previous config under `backend/batch/models/batch4_runs/promoted_20261121T121133Z/`. This validation result applies only to that reviewed sample and does not replace untouched test or external evaluation.
 Operational instructions are in the [developer guide](developer-guide.md#batch-4-reviewed-label-retraining).
 
 ### P1/P2: ingestion, preprocessing and source enrichment
@@ -217,14 +217,14 @@ B3's saved classifier and configuration include its attack-type evaluation metri
 
 ### Model comparison results
 
-Batch 4 compared both models using the reviewed-label CSV on the same 60 validation prompts (30 benign and 30 malicious). the current model scored a macro-F1 of 0.6011, while candidate scored 0.8496 and was promoted. In the table below, the true labels and predictions, as rows and columns respectively, were mapped into confusion matrices and ordered benign then malicious: 
+The historical Batch 4 run compared both models using the separate reviewed-label CSV on the same 60 validation prompts (30 benign and 30 malicious). The current model scored macro-F1 0.6011, while the candidate scored 0.8496 and was promoted without the P7 queue provenance or untouched regression gates now required by the retraining workflow. These figures are historical and do not establish that the candidate generalizes. The confusion matrices use true labels as rows and predictions as columns, ordered benign then malicious:
 
 | Model | Validation macro-F1 | Confusion matrix |
 | --- | ---: | --- |
 | Current | 0.6011 | `[[9, 21], [0, 30]]` |
 | Batch 4 candidate (promoted) | 0.8496 | `[[24, 6], [3, 27]]` |
 
-`backend/batch/models/batch4_runs/` is where the reports, including label counts and candidate training metrics are located. Because the reviewed set is small, the promotion metric reflects model selection and should not be treated as an unbiased final test estimate.
+`backend/batch/models/batch4_runs/` stores reports, label counts, and candidate metrics. The old validation score reflects model selection on a small, uncertain sample and is not an unbiased test estimate.
 
 ### Guard latency and throughput
 
@@ -266,9 +266,9 @@ The run also showed P4 false positives. Of the 14 prompts that P10 allowed, P7 b
 
 ### Retraining before and after
 
-[Batch 4: reviewed-label retraining](#batch-4-reviewed-label-retraining) reports the validation metrics and confusion matrices for the current and candidate models. The candidate strictly improved macro-F1 and was promoted, though its validation score is not an untouched test result.
+[Batch 4: reviewed-label retraining](#batch-4-reviewed-label-retraining) documents the historical CSV run and the updated queue-based workflow. The historical candidate improved on its selected validation sample, but it was not checked against untouched regression sets before promotion.
 
-When data distributions change, concept-drift research treats retraining as one way to adapt ([Lu et al., 2019](https://doi.org/10.1109/TKDE.2018.2876857)), which gives context for comparing the reviewed-label candidate with the active model. In this project, Batch 4 was run manually on reviewed data. P6's score-distribution alert does not trigger retraining automatically, and the strict macro-F1 promotion rule is our own selection policy.
+When data distributions change, concept-drift research treats retraining as one way to adapt ([Lu et al., 2019](https://doi.org/10.1109/TKDE.2018.2876857)). P6's score-distribution alert does not trigger retraining automatically. The earlier Batch 4 promotion rule compared only a selected review sample; the updated workflow also gates candidates on untouched NeurAlchemy and external evaluations.
 
 
 ### Guarded versus unguarded agent demonstration

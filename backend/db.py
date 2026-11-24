@@ -142,6 +142,38 @@ def list_prompts(database_url):
     return [serialize_prompt(row) for row in reversed(rows)]
 
 
+def list_review_queue(database_url, limit=200):
+    """Return P7 review decisions with any existing human label."""
+    with connect(database_url) as conn:
+        return conn.execute(
+            """SELECT p.id, p.text, p.created_at, p.dataset_prompt_id, g.reason, g.malicious_score,
+                      r.label, r.reviewer, r.reviewed_at
+               FROM prompts p JOIN guard_results g ON g.prompt_id = p.id
+               LEFT JOIN prompt_reviews r ON r.prompt_id = p.id
+               WHERE g.decision = 'review'
+               ORDER BY (r.prompt_id IS NULL) DESC, p.created_at DESC, p.id DESC
+               LIMIT %s""",
+            (limit,),
+        ).fetchall()
+
+
+def save_prompt_review(database_url, prompt_id, label, reviewer=None):
+    """Save/update a human label only for a prompt that P7 actually routed to review."""
+    if label not in (0, 1):
+        raise ValueError("Review label must be 0 (benign) or 1 (malicious).")
+    with connect(database_url) as conn:
+        return conn.execute(
+            """INSERT INTO prompt_reviews (prompt_id, label, reviewer)
+               SELECT p.id, %s, %s FROM prompts p
+               JOIN guard_results g ON g.prompt_id = p.id
+               WHERE p.id = %s AND g.decision = 'review'
+               ON CONFLICT (prompt_id) DO UPDATE SET label = EXCLUDED.label,
+                   reviewer = EXCLUDED.reviewer, reviewed_at = NOW()
+               RETURNING prompt_id""",
+            (label, reviewer, prompt_id),
+        ).fetchone() is not None
+
+
 def save_guard_result(
     database_url, prompt_id, decision, malicious_score=None, attack_type=None, reason=None, model_version=None
 ):
