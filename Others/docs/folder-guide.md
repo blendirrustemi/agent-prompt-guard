@@ -14,7 +14,9 @@
 | `backend/dashboard/` | Streamlit app (`app.py`) with one sidebar section per member, shared PostgreSQL access (`data.py`), and member pages in `views/`. |
 | `backend/batch/models/` | Active Batch 2/3 models required by the guard. |
 | `results/evaluation.json` | Saved model evaluation required by Emma’s dashboard and copied into the Docker image. |
-| `backend/tests/` | Dashboard render tests preserved from the latest main updates. |
+| `backend/tests/` | Dashboard render tests and Batch 4 review-workflow checks preserved from main. |
+| `backend/batch/` | Current P7 review export and Batch 4 retraining workflow, plus active runtime models. |
+| `Others/Models/` | Restored batch data, notebooks, training/import/evaluation tools, dependencies, model snapshots, and historical runs. Training here writes to its own `models/` directory. |
 | `Others/results/` | Archived experiment CSVs. |
 | `Others/tmp/` | Old logs, screenshots, and verification scripts. Local PostgreSQL data and model caches remain in `tmp/`. |
 | `Others/docs/` | Project report, developer guide, Excel work plan, research notes, and architecture/database diagrams (`database-schema.dbml` opens in dbdiagram.io). |
@@ -55,7 +57,7 @@ rate, sources, and optional label/attack-group filters. It uses the browser's sa
 Kafka event and P1–P4 path. Wait for the consumer's scorer-ready log after model/reference warm-up;
 the MiniLM download cache is kept in a Compose volume. See the developer guide for configuration and the report for token-limit handling.
 
-The archived backend tools, backend and frontend tests, notebooks, baseline models, and training history were removed.
-Dashboard tests updated on main are retained in `backend/tests/`. Other training and test commands in the developer guide are retained as historical references.
+The selected batch materials are restored in `Others/Models/`; the current P7 review and Batch 4 workflow remains in `backend/batch/`.
+Dashboard and Batch 4 tests updated on main are retained in `backend/tests/`. Commands for the removed older tests and demo stub remain historical references.
 Keep the version-two event contract and shared topic names consistent. Runtime packages belong in
 `backend/requirements.txt`.

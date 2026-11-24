@@ -2,10 +2,11 @@
 
 [README](../../README.md) | [Project report](project_report.md)
 
-**Repository cleanup:** `Others/backend/` was deleted. Commands below that use
-`Others.backend` modules or `Others/backend/` paths are historical references and
-cannot run from this checkout. This includes backend tests, training, dataset imports,
-evaluation tools, and the demo guard stub. The application and active Batch 2/3 models remain available.
+**Repository layout:** Batch data, notebooks, dataset imports, training/evaluation tools,
+dependencies, model snapshots, and historical runs are restored in `Others/Models/`.
+These training tools write to `Others/Models/models/`; the active models and the latest
+P7 review-export/Batch 4 workflow remain in `backend/batch/`. Commands below that use
+`Others.backend` modules or `Others/backend/` paths still refer to removed tests or the demo guard stub.
 The frontend tests under `Others/frontend/` were also removed; their commands below are historical references.
 The dashboard tests updated on main are retained in `backend/tests/test_dashboard.py`; run them with
 `python -m unittest discover -s backend/tests -p test_dashboard.py -v` in an environment with the runtime dependencies.
@@ -584,9 +585,9 @@ The schema and foreign keys are shown in [database-schema.dbml](database-schema.
 
 For the full batch/notebook environment, use Python 3.13+ and uv:
 ```sh
-uv sync --project Others/backend/batch --locked
-uv run --project Others/backend/batch --locked python Others/backend/batch/import_neuralchemy.py
-uv run --project Others/backend/batch --locked python Others/backend/batch/import_external_datasets.py
+uv sync --project Others/Models --locked
+uv run --project Others/Models --locked python Others/Models/import_neuralchemy.py
+uv run --project Others/Models --locked python Others/Models/import_external_datasets.py
 ```
 
 Import commands download their datasets and use the root `.env`. NeurAlchemy baseline
@@ -602,12 +603,12 @@ are imported:
 
 
 ```sh
-uv run --project Others/backend/batch --locked python Others/backend/batch/train_batch3.py
+uv run --project Others/Models --locked python Others/Models/train_batch3.py
 ```
 
 B3 uses the imported six-way `attack_group` labels for malicious NeurAlchemy rows,
 preserves their train/validation/test splits, and saves its classifier and metrics
-under `backend/batch/models/batch3/`.
+under `Others/Models/models/batch3/`.
 
 The classifier uses multinomial Logistic Regression, with a softmax function producing probabilities across the six classes.
 We used balanced class weights to give greater weight to less frequent families.
@@ -616,14 +617,15 @@ Evaluate the saved B1/B2 artifacts on imported external-test rows and save a JSO
 report (the command also prints JSON when `--output` is omitted):
 
 ```sh
-uv run --project Others/backend/batch --locked python -m Others.backend.batch.evaluation --output results/evaluation.json
+uv run --project Others/Models --locked python -m Others.Models.evaluation --output Others/Models/evaluation.json
 ```
 
 The report separates deepset and jackhhao and includes malicious-class precision,
 recall, F1, macro-F1, false-positive rate, ROC-AUC, confusion counts, and per-prompt
 inference latency. Latency includes text feature or embedding generation and prediction,
 but excludes model loading. Cross-dataset duplicate prompts are represented by whichever
-source the importer retained. The Dockerfile copies `results/` into `/app/results/`,
+source the importer retained. This command evaluates the archived model snapshots.
+The dashboard continues to use the saved `results/evaluation.json`; the Dockerfile copies `results/` into `/app/results/`,
 so the saved evaluation is available at `/app/results/evaluation.json` inside the
 dashboard container after rebuilding the shared image and recreating the container.
 
@@ -779,7 +781,7 @@ Database checks remove their fixture rows. Kafka round-trip checks publish fixtu
 records to `prompts_raw` and `prompts_allowed`. Batch checks use local examples without downloads:
 
 ```sh
-TEST_DATABASE_URL=postgresql://pijd:pijd@127.0.0.1:55432/pijd_test uv run --project Others/backend/batch --locked python -m unittest discover -s Others/backend/tests -p test_batch_import.py -v
+TEST_DATABASE_URL=postgresql://pijd:pijd@127.0.0.1:55432/pijd_test uv run --project Others/Models --locked python -m unittest discover -s Others/backend/tests -p test_batch_import.py -v
 ```
 
 The combined runtime suite also checks the agent's two tools, its stored-decision gate,
