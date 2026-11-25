@@ -35,6 +35,7 @@ ENCODER_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 MAX_SEQ_LENGTH = 256
 BATCH_SIZE = 32
 REGRESSION_F1_TOLERANCE = 0.0
+MIN_REVIEW_VALIDATION_PER_LABEL = 5
 
 
 def load_reviewed_csv(path):
@@ -141,7 +142,7 @@ def p7_route_counts(classifier, features, allow_max, block_min):
 
 
 def load_gate_rows(database_url):
-    """Load untouched NeurAlchemy test and external test rows for regression checks."""
+    """Load held-out evaluation rows used as Batch 4 promotion regression gates."""
     with db.connect(database_url) as conn:
         rows = conn.execute(
             """SELECT id, text, label, source_dataset
@@ -197,11 +198,28 @@ def run_batch4(csv_path, *, promote=True, database_url=None):
     rows = load_reviewed_csv(csv_path)
     train = [row for row in rows if row["split"] == "train"]
     validation = [row for row in rows if row["split"] == "validation"]
+    validation_counts = {label: sum(row["label"] == label for row in validation) for label in (0, 1)}
+    if any(count < MIN_REVIEW_VALIDATION_PER_LABEL for count in validation_counts.values()):
+        raise ValueError(
+            "Batch 4 requires at least five review-validation prompts per class "
+            f"(ten total); found {validation_counts}. Collect more reviewed prompts first."
+        )
     config_path = CURRENT_DIR / "config.json"
     classifier_path = CURRENT_DIR / "classifier.pkl"
-    current_config = json.loads(config_path.read_text(encoding="utf-8"))
-    with classifier_path.open("rb") as file:
-        current = pickle.load(file)
+    bundle_path = CURRENT_DIR / "active_bundle.pkl"
+    if bundle_path.is_file():
+        with bundle_path.open("rb") as file:
+            current_bundle = pickle.load(file)
+        if (not isinstance(current_bundle, dict) or current_bundle.get("format_version") != 1
+                or not isinstance(current_bundle.get("config"), dict)
+                or not hasattr(current_bundle.get("classifier"), "predict_proba")):
+            raise ValueError("The active Batch 2 model bundle has an unsupported format.")
+        current_config = current_bundle["config"]
+        current = current_bundle["classifier"]
+    else:
+        current_config = json.loads(config_path.read_text(encoding="utf-8"))
+        with classifier_path.open("rb") as file:
+            current = pickle.load(file)
 
     if not database_url:
         raise ValueError("DATABASE_URL is required to combine original training data and run regression gates.")
@@ -283,7 +301,7 @@ def run_batch4(csv_path, *, promote=True, database_url=None):
                 for split in ("train", "validation")
             },
         },
-        "selection_metric": "review-queue validation macro-F1 is a weak, selection-biased signal; candidate must improve it and not regress on any untouched evaluation set",
+        "selection_metric": "review-queue validation macro-F1 is a weak, selection-biased signal; candidate must improve it and pass the held-out promotion regression gates",
         "review_validation_caveat": "P7 sends uncertain prompts to review, so this validation set is selected on current-model uncertainty and its score is not an unbiased estimate of generalization.",
         "candidate_train": candidate_train_metrics,
         "current_validation": current_metrics,
@@ -294,27 +312,32 @@ def run_batch4(csv_path, *, promote=True, database_url=None):
             "minimum_change": -REGRESSION_F1_TOLERANCE,
             "tolerance": REGRESSION_F1_TOLERANCE,
         },
-        "untouched_regression_gates": gate_results,
+        "promotion_regression_gates": gate_results,
         "promotion_decision": {
             "review_validation_improved": candidate_metrics["macro_f1"] > current_metrics["macro_f1"],
             "all_regression_gates_passed": regression_passed,
         },
-        "promoted": bool(accepted and promote),
+        "promoted": False,
     }
-    (run_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
     if accepted and promote:
-        # Preserve recoverable artifacts before replacing the active P4 classifier.
-        shutil.copy2(classifier_path, run_dir / "previous_classifier.pkl")
-        shutil.copy2(config_path, run_dir / "previous_config.json")
+        # Preserve the active pair, then replace it with one atomic bundle write.
+        shutil.copy2(bundle_path if bundle_path.is_file() else classifier_path,
+                     run_dir / ("previous_active_bundle.pkl" if bundle_path.is_file() else "previous_classifier.pkl"))
+        if not bundle_path.is_file():
+            shutil.copy2(config_path, run_dir / "previous_config.json")
         new_config = dict(current_config)
+        new_config.pop("neuralchemy_test_macro_f1", None)
+        new_config.pop("external_test_macro_f1", None)
         new_config.update({
             "classifier_parameters": candidate.get_params(),
             "train_macro_f1": candidate_train_metrics["macro_f1"],
-            # This candidate has not been evaluated on the original untouched test set.
-            "neuralchemy_test_macro_f1": gate_results["neuralchemy"]["candidate"]["macro_f1"],
-            "external_test_macro_f1": {
-                name: gate_results[name]["candidate"]["macro_f1"] for name in ("deepset", "jackhhao")
+            "promotion_gate_scores": {
+                name: {
+                    "macro_f1": gate_results[name]["candidate"]["macro_f1"],
+                    "used_for_promotion_selection": True,
+                }
+                for name in ("neuralchemy", "deepset", "jackhhao")
             },
             "training_data": {
                 "source": report["training_data"]["source"],
@@ -334,14 +357,18 @@ def run_batch4(csv_path, *, promote=True, database_url=None):
                 for name in ("scikit-learn", "sentence-transformers", "numpy")
             },
         })
-        atomic_write(classifier_path, lambda path: path.write_bytes(pickle.dumps(candidate)))
-        atomic_write(config_path, lambda path: path.write_text(json.dumps(new_config, indent=2) + "\n", encoding="utf-8"))
+        bundle = {"format_version": 1, "config": new_config, "classifier": candidate}
+        atomic_write(bundle_path, lambda path: path.write_bytes(pickle.dumps(bundle)))
+        report["promoted"] = True
         print("Candidate is better; promoted to the active Batch 2/P4 classifier.")
-    elif not accepted:
-        print("Candidate did not improve validation macro-F1; current model retained.")
+    elif not report["promotion_decision"]["review_validation_improved"]:
+        print("Candidate did not improve review-validation macro-F1; current model retained.")
+    elif not regression_passed:
+        print("Candidate improved review-validation macro-F1 but failed regression gates; current model retained.")
     else:
-        print("Candidate is better, but --no-promote was set; active model retained.")
+        print("Candidate passed promotion checks, but --no-promote was set; active model retained.")
 
+    (run_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(f"Current validation macro-F1:   {current_metrics['macro_f1']:.4f}")
     print(f"Candidate validation macro-F1: {candidate_metrics['macro_f1']:.4f}")
     print(f"Report: {run_dir / 'report.json'}")

@@ -56,7 +56,7 @@ def export(path):
     # Deterministic stratified split. Keep at least one example of each label in both partitions.
     split_by_id = {}
     for label, examples in by_label.items():
-        validation_count = max(1, round(len(examples) * 0.2))
+        validation_count = max(1, round(len(examples) * 0.25))
         validation_count = min(validation_count, len(examples) - 1)
         examples.sort(key=lambda row: row["text_hash"])
         for row in examples[:-validation_count]:

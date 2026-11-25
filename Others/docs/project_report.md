@@ -71,12 +71,16 @@ This label describes the suspected attack; it does not determine whether the pro
 
 #### Batch 4: reviewed-label retraining
 
-Batch 4 is an explicit offline command using reviewed benign/malicious labels supplied as a CSV, with rows assigned to training or validation. This follows a model-update pattern in which expert feedback is incorporated as labelled data and used to retrain a supervised model; the CSV workflow and promotion rule here are project-specific choices ([Chen et al., 2023](https://doi.org/10.1016/j.patter.2023.100780)). Promotion replaces the active Batch 2 classifier only if the candidate's validation macro-F1 is strictly higher than the current classifier's score on the same labelled validation rows. 
+Batch 4 starts from the original NeurAlchemy training split and adds eligible benign/malicious labels from prompts P7 routed to its review band. Reviewers label those prompt IDs in the dashboard queue; an exporter deduplicates normalized prompt text and creates a hash-based stratified train/validation CSV. Batch 4 verifies the IDs and labels against PostgreSQL before fitting, then records the source IDs in its run report. This follows a model-update pattern in which expert feedback is incorporated as labelled data; the queue workflow and promotion gates here are project-specific choices ([Chen et al., 2023](https://doi.org/10.1016/j.patter.2023.100780)).
+The queue holdout score is a weak, selection-biased adaptation signal because the current model selected those prompts as uncertain. Promotion also requires no macro-F1 regression on the held-out NeurAlchemy test, deepset, and jackhhao sets. Since these sets influence promotion, they are regression gates for model selection, not independent final estimates of a promoted candidate. Current and candidate models are scored on the same P4-covered rows. Validation rows are never used to fit the candidate.
+The queue-based pipeline has now been demonstrated on human-labeled P7 review prompts. In the 2026-11-24 run, 41 reviewed prompts were exported, with 31 used for training and 10 held out for review validation. The candidate improved review-validation macro-F1 but was not promoted because it failed the NeurAlchemy regression gate. The validation set remains small and selection-biased. Exact normalized overlaps with imported dataset rows are excluded; semantic near-duplicates are not automatically detected and remain a limitation.
+The initial 2026-11-24 eligibility check found 777 score-band queue prompts (379 unique normalized texts), all linked to imported dataset replays; after exact-overlap exclusion, none were eligible for Batch 4 labeling/export. A later check, before the successful run, found 50 saved labels overall but only one unique export-eligible prompt (malicious). After additional eligible prompts were collected, the run described below demonstrated the review-queue training and evaluation path. The exporter requires both labels in both splits, and the trainer requires at least five review-validation prompts per class. With a 25% validation split, plan for at least 20 unique prompts per class; this is a minimum for the pipeline, not a guarantee of a reliable estimate.
+The encoder and B3 classifier remain unchanged; P6 alerts request human consideration rather than automatically running or promoting B4.
 
 Operational instructions are in the [developer guide](developer-guide.md#batch-4-reviewed-label-retraining).
 
 ### P1/P2: ingestion, preprocessing and source enrichment
- 
+
 P1 produces a Unicode-normalized, whitespace cleaned prompt and gets the character count, word count, and symbol ratio. The original text remains unchanged for classification and agent execution. P2 adds source context using allow, block, and review counts from the preceding ten minutes.
 
 ### P3/P4: similarity and classification
@@ -84,7 +88,7 @@ P1 produces a Unicode-normalized, whitespace cleaned prompt and gets the charact
 For each incoming prompt within the model’s 256-token limit, the intake worker creates one normalised, 384-dimensional embedding using the pretrained `all-MiniLM-L6-v2` encoder. The encoder’s weights remain frozen during processing. This prompt embedding is used for P3 similarity probing and P4 classification.
 
 
-P3 compares the incoming embedding with two reference collections: malicious prompts from the NeurAlchemy training data and recent prompts that P4 predicted to be malicious with high confidence using cosine similarity. P3 returns the closest reference and its similarity score. A similar embedding-based cosine comparison is described in [PromptGuard: A structured framework for injection-resilient language models](https://www.nature.com/articles/s41598-025-31086-y) by Ahmed Alzahrani. The numerical similarity score is stored in PostgreSQL and used as a feature by P5’s anomaly detector. 
+P3 compares the incoming embedding with two reference collections: malicious prompts from the NeurAlchemy training data and recent prompts that P4 predicted to be malicious with high confidence using cosine similarity. P3 returns the closest reference and its similarity score. A similar embedding-based cosine comparison is described in [PromptGuard: A structured framework for injection-resilient language models](https://www.nature.com/articles/s41598-025-31086-y) by Ahmed Alzahrani. The numerical similarity score is stored in PostgreSQL and used as a feature by P5’s anomaly detector.
 
 P4 applies the trained Batch 2 classifier to estimate whether the incoming prompt is benign or malicious. Combining pretrained text embeddings with traditional classifiers for jailbreak detection has also been explored by ([Galinkin and Sablotny, 2024](https://arxiv.org/abs/2412.01547)). When the maliciousness probability is at least 0.5, Batch 3 also predicts one of the six attack families using the same embedding.
 
@@ -101,27 +105,27 @@ While P5 flags an individual prompt that looks unusual, P6 looks for a change ov
 - **P7 router** consumes `throttle_decisions`. P10 `block` immediately finalizes the prompt as
   `block`. P10 `allow` joins the stored P4 `malicious_score`; prompts with no score remain pending
   while later throttle events continue. P7 allows scores at or below 0.30, blocks scores at or
-  above 0.70, and sends the middle band to `review`. 
+  above 0.70, and sends the middle band to `review`.
 - **P8 aggregation** refreshes a 60-second event-time window every 10 seconds. It counts P4's six
   attack types and records up to ten repeated normalized prompts per type (at least two occurrences).
 
-P7's role as a pre-execution allow/block/review gate is supported in NeMo Guardrails, where [Rebedea et al., 2023](https://doi.org/10.18653/v1/2023.emnlp-demo.40) describe reprogrammable, model-independent runtime rails and input moderation ahead of a dialogue system. In this implementation, P8's attack-type counts and repeated-pattern summary are operational monitoring outputs that do not override P7. Additionally, the sliding-window and Top-K literature motivates this rolling summary ([Gou et al., 2023](https://doi.org/10.1109/TKDE.2022.3151140)). 
+P7's role as a pre-execution allow/block/review gate is supported in NeMo Guardrails, where [Rebedea et al., 2023](https://doi.org/10.18653/v1/2023.emnlp-demo.40) describe reprogrammable, model-independent runtime rails and input moderation ahead of a dialogue system. In this implementation, P8's attack-type counts and repeated-pattern summary are operational monitoring outputs that do not override P7. Additionally, the sliding-window and Top-K literature motivates this rolling summary ([Gou et al., 2023](https://doi.org/10.1109/TKDE.2022.3151140)).
 
 ### P9/P10: burst detection and rate limiting
 
 **P9** follows the elastic-burst model of [Zhu & Shasha (2003)](https://doi.org/10.1145/956750.956789). It counts every prompt per `source` in several sliding windows at once, each with its own threshold,
 and reports a burst when any window reaches its threshold. The short window catches sharp floods, while a longer window catches slow, steady traffic because the allowed rate falls as the window grows, as in the paper.
 
-**P10** blocks a source as soon as P9 reports a burst. 
+**P10** blocks a source as soon as P9 reports a burst.
 
 The challenge remaining is that like any per-source limiter, P9 cannot see an attacker who spreads traffic over many sources.
 
 ### Agent and user interface
 
-One LangChain agent with two deterministic tools, running a local model through [Ollama](https://ollama.com). Built with LangChain's `create_agent`, it runs a ReAct-style loop ([Yao et al., 2023](https://arxiv.org/abs/2210.03629)): the model either answers or calls a tool, reads the tool's result, and repeats until it can answer. Arithmetic and project facts therefore come from the tools rather than from the model's memory. 
+One LangChain agent with two deterministic tools, running a local model through [Ollama](https://ollama.com). Built with LangChain's `create_agent`, it runs a ReAct-style loop ([Yao et al., 2023](https://arxiv.org/abs/2210.03629)): the model either answers or calls a tool, reads the tool's result, and repeats until it can answer. Arithmetic and project facts therefore come from the tools rather than from the model's memory.
 
 The browser polls through checking, waiting, and answering, then displays the stored agent response. Blocked and review outcomes explain why a prompt was held; each prompt is an independent agent run.
- 
+
 ### Storage
 
 PostgreSQL stores incoming prompts and preprocessing snapshots, per-prompt guard results (P3 similarity, P4 classification, P5 anomaly, and P7 decisions), training/evaluation datasets, agent execution records, throttling decisions, and rolling P8 attack-aggregation snapshots. The full schema and foreign keys are shown in [database-schema.dbml](database-schema.dbml) and [database.png](database.png).
@@ -149,14 +153,28 @@ The saved Batch 1 and Batch 2 external-test results are recorded in [evaluation.
 
 Batch 3 achieved a macro-F1 of 0.76 on the NeurAlchemy test split.
 
-The historical Batch 4 run compared both models using the separate reviewed-label CSV on the same 60 validation prompts (30 benign and 30 malicious). The current model scored macro-F1 0.6011, while the candidate scored 0.8496 and was promoted without the P7 queue provenance or untouched regression gates now required by the retraining workflow. These figures are historical and do not establish that the candidate generalizes. The confusion matrices use true labels as rows and predictions as columns, ordered benign then malicious:
+The historical Batch 4 run compared the pre-Batch-4 baseline and a candidate trained from a separate reviewed-label CSV on the same 60 validation prompts (30 benign and 30 malicious). That candidate was promoted without P7 queue provenance or the regression gates now required by the retraining workflow. It is not the active classifier: the repository artifacts have been restored to the pre-Batch-4 baseline. These validation figures are historical and do not establish that the candidate generalizes. The confusion matrices use true labels as rows and predictions as columns, ordered benign then malicious:
 
 | Model | Validation macro-F1 | Confusion matrix |
 | --- | ---: | --- |
-| Current | 0.6011 | `[[9, 21], [0, 30]]` |
-| Historical Batch 4 candidate (promoted) | 0.8496 | `[[24, 6], [3, 27]]` |
+| Pre-Batch-4 baseline (active) | 0.6011 | `[[9, 21], [0, 30]]` |
+| Historical Batch 4 candidate (not active) | 0.8496 | `[[24, 6], [3, 27]]` |
 
-`backend/batch/models/batch4_runs/` stores reports, label counts, and candidate metrics. The old validation score reflects model selection on a small, uncertain sample and is not an unbiased test estimate.
+`backend/batch/models/batch4_runs/` stores reports, label counts, and candidate metrics. Promotion gate scores are model-selection results; they are not independent final estimates. The historical review-validation score reflects model selection on a small, uncertain sample and is not an unbiased estimate either.
+
+#### P7 review-queue Batch 4 trial (2026-11-24)
+
+Run `20261124T175300Z` used 4,391 original NeurAlchemy training prompts plus 31 human-labeled P7 prompts for fitting (4,422 total). Ten additional reviewed prompts were held out for validation (5 benign and 5 malicious). Candidate training macro-F1 was 0.9615. On the review holdout, current macro-F1 was 0.3333 and candidate macro-F1 was 0.6703; the candidate correctly classified 2 of 5 benign and all 5 malicious prompts. These validation numbers are highly uncertain because the set contains only ten prompts and was selected from P7's uncertainty band.
+
+| Promotion gate | Current macro-F1 | Candidate macro-F1 | Scored prompts | Excluded over 256 tokens | Result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| NeurAlchemy test | 0.9440 | 0.9418 | 912 | 30 | Failed |
+| deepset | 0.6600 | 0.6600 | 541 | 5 | Passed |
+| jackhhao | 0.5092 | 0.5201 | 644 | 389 | Passed |
+
+The candidate failed the Neuralchemy regression gate because the tolerance is zero; it added two false negatives (26 to 28). It was not promoted. The run used `--no-promote`, which independently kept the active model unchanged. The [run report](../../backend/batch/models/batch4_runs/20261124T175300Z/report.json) contains the 41 prompt IDs, class counts, confusion matrices, and full gate results.
+
+The earlier [evaluation results](../../results/evaluation.json) report Jackhhao macro-F1 0.6206 on 1,033 prompts. The Batch 4 gate excluded 389 prompts over P4's 256-token limit and scored the remaining 644. These are different populations, so 0.6206 and 0.5092 are not directly comparable. The earlier result file does not record an equivalent per-prompt coverage filter; a same-population evaluation is needed to explain the score difference.
 
 ### Guard latency and throughput
 
