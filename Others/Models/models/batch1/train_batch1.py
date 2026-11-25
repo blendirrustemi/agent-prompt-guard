@@ -13,7 +13,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score
 
-BACKEND_DIR = Path(__file__).resolve().parents[2] / "backend"
+BACKEND_DIR = Path(__file__).resolve().parents[4] / "backend"
 sys.path.insert(0, str(BACKEND_DIR))
 
 from db import connect
@@ -21,7 +21,7 @@ from db import connect
 MAX_FEATURES = 10000
 NGRAM_RANGE = (1, 2)
 SUBLINEAR_TF = True
-MODEL_DIR = Path(__file__).resolve().parent / "models" / "batch1"
+MODEL_DIR = Path(__file__).resolve().parent
 
 
 def load_baseline_data(database_url):

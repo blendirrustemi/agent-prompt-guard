@@ -2,11 +2,6 @@
 
 [README](../../README.md) | [Developer guide](developer-guide.md) | [Research-paper notes](research-papers.md)
 
-**Archive note:** This report describes the completed experiments. Supporting batch tools,
-notebooks, data, model snapshots, and training history are restored in `Others/Models/`.
-The latest P7 review/Batch 4 workflow remains in `backend/batch/`. References to removed
-older tests describe the historical setup.
-
 ## Abstract
 
 Prompt injection and jailbreak attacks can be used to divert an AI agent from its normal function. This project is the development of a streaming guard that checks prompts before they are passed to a LangChain agent. The guard is built on Kafka and PostgreSQL and incorporates ten processing stages. We compare TF-IDF and frozen MiniLM embeddings with Logistic Regression for the binary detection task and train a multiclass classifier to detect the attack family. We train the embedding based classifier using NeurAlchemy and evaluate it on two external datasets. The final Batch 2 model achieved a macro-F1 of 0.94 on the NeurAlchemy test split and 0.66 and 0.62 on deepset and jackhhao respectively, showing weaker generalisation to external prompts. The guard makes a decision to allow, block or review the prompt and stores the results for analysis in a dashboard. This project demonstrates how prompt screening and monitoring can be integrated into an AI agent’s workflow before a prompt is executed. It also highlights the importance of human review and evaluation on varied prompts to identify weaknesses and guide future retraining of the guard.
@@ -18,7 +13,7 @@ AI agents may act on untrusted user input or external content when processing na
 The system uses ten streaming pipelines: **P1** ingests prompts and cleans text; **P2** adds source context; **P3** checks similarity to known attack prompts; **P4** classifies prompts and predicts attack types; **P5** detects anomalous prompts; **P6** monitors score drift; **P7** routes prompts to allow, block, or review; **P8** aggregates attack types and repeated patterns; **P9** detects source bursts; and **P10** applies rate limits. Allowed prompts can reach the agent, while the system stores decisions and results for analysis.
 
 
-The project compares classical and embedding-based binary classifiers in Batches 1 and 2, adds attack-type classification in Batch 3, and evaluates reviewed-label retraining in Batch 4. Across its experiments, it measures model performance on primary and external datasets, runtime latency and throughput, drift and burst behavior, and guarded versus unguarded agent runs. The completed dashboards track decision trends, model comparisons, drift alerts, attack-type and Top-10 pattern summaries, and review-queue and throttling activity. Research on sliding-window stream summaries and model adaptation gives context for these design areas ([Gou et al., 2023](https://doi.org/10.1109/TKDE.2022.3151140); [Lu et al., 2019](https://doi.org/10.1109/TKDE.2018.2876857)).
+The project compares classical and embedding-based binary classifiers in Batches 1 and 2, adds attack-type classification in Batch 3, and evaluates reviewed-label retraining in Batch 4. Across its experiments, it measures model performance on primary and external datasets, runtime latency and throughput, and drift and burst behavior. The completed dashboards track decision trends, model comparisons, drift alerts, attack-type and Top-10 pattern summaries, and review-queue and throttling activity. Research on sliding-window stream summaries and model adaptation gives context for these design areas ([Gou et al., 2023](https://doi.org/10.1109/TKDE.2022.3151140); [Lu et al., 2019](https://doi.org/10.1109/TKDE.2018.2876857)).
 
 
 ## Datasets utilised
@@ -27,14 +22,14 @@ We used three datasets from Hugging Face. NeurAlchemy was our main dataset for t
 
 ### NeurAlchemy
 
-The [NeurAlchemy Prompt Injection Dataset](https://huggingface.co/datasets/neuralchemy/Prompt-injection-dataset) contains benign prompts as well as prompt-injection and jailbreak examples which were used to train the batch 1 and 2 binary classification models. The dataset also includes attack-category labels, which were used for batch 3's multiclass attack classifier.
+The [NeurAlchemy Prompt Injection Dataset](https://huggingface.co/datasets/neuralchemy/Prompt-injection-dataset) contains benign prompts as well as prompt-injection and jailbreak examples which were used to train the Batch 1 and 2 binary classification models. The dataset also includes attack-category labels, which were used for Batch 3's multiclass attack classifier.
 We kept the dataset's original training, validation, and test splits. Initially, we planned to use only rows marked as neuralchemy_v1 in the source column. However, we later expanded this to include all sources, giving the models a wider variety of prompts to learn from.
 For Batch 3, we grouped the original attack categories into six broader families: instruction manipulation, jailbreak/persona manipulation, obfuscation, information extraction, indirect injection/agent manipulation, and adversarial attacks. This reduced the number of separate labels and brought related attack techniques together.
 
 ### External evaluation datasets
 
 The deepset/prompt-injections and jackhhao/jailbreak-classification datasets are imported into PostgreSQL for external testing.
-They remain excluded from model training and selection, and the evaluation report presents their results separately.
+These datasets were kept separate from Batch 1/2 training and model selection. The current Batch 4 workflow also uses them as promotion checks.
 Cross-dataset duplicate prompts are represented by whichever source the importer retained.
 
 ## System architecture
@@ -57,7 +52,7 @@ For the backend we used Flask with a browser interface and PostgreSQL for storag
 
 #### Batch 1: classical binary classification
 
-TF-IDF features with Logistic Regression are used in Batch 1 to classify prompts as benign or malicious. ([Rebedea et al., 2023](https://doi.org/10.18653/v1/2023.emnlp-demo.40)), in NeMo Guardrails, discuss the runtime overhead of programmable guardrails and the potential role of specialized execution-rail models, which motivates a lightweight local classifier in the guard path. Although the paper does not evaluate TF-IDF or Logistic Regression, Batch 1 uses both as the project's classical baseline for comparison.
+TF-IDF features with Logistic Regression are used in Batch 1 to classify prompts as benign or malicious. [Rebedea et al. (2023)](https://doi.org/10.18653/v1/2023.emnlp-demo.40), in NeMo Guardrails, discuss the runtime overhead of programmable guardrails and the potential role of specialized execution-rail models, which motivates a lightweight local classifier in the guard path. Although the paper does not evaluate TF-IDF or Logistic Regression, Batch 1 uses both as the project's classical baseline for comparison.
 
 #### Batch 2: embedding-based binary classification
 
@@ -71,13 +66,9 @@ This label describes the suspected attack; it does not determine whether the pro
 
 #### Batch 4: reviewed-label retraining
 
-Batch 4 starts from the original NeurAlchemy training split and adds eligible benign/malicious labels from prompts P7 routed to its review band. Reviewers label those prompt IDs in the dashboard queue; an exporter deduplicates normalized prompt text and creates a hash-based stratified train/validation CSV. Batch 4 verifies the IDs and labels against PostgreSQL before fitting, then records the source IDs in its run report. This follows a model-update pattern in which expert feedback is incorporated as labelled data; the queue workflow and promotion gates here are project-specific choices ([Chen et al., 2023](https://doi.org/10.1016/j.patter.2023.100780)).
-The queue holdout score is a weak, selection-biased adaptation signal because the current model selected those prompts as uncertain. Promotion also requires no macro-F1 regression on the held-out NeurAlchemy test, deepset, and jackhhao sets. Since these sets influence promotion, they are regression gates for model selection, not independent final estimates of a promoted candidate. Current and candidate models are scored on the same P4-covered rows. Validation rows are never used to fit the candidate.
-The queue-based pipeline has now been demonstrated on human-labeled P7 review prompts. In the 2026-11-24 run, 41 reviewed prompts were exported, with 31 used for training and 10 held out for review validation. The candidate improved review-validation macro-F1 but was not promoted because it failed the NeurAlchemy regression gate. The validation set remains small and selection-biased. Exact normalized overlaps with imported dataset rows are excluded; semantic near-duplicates are not automatically detected and remain a limitation.
-The initial 2026-11-24 eligibility check found 777 score-band queue prompts (379 unique normalized texts), all linked to imported dataset replays; after exact-overlap exclusion, none were eligible for Batch 4 labeling/export. A later check, before the successful run, found 50 saved labels overall but only one unique export-eligible prompt (malicious). After additional eligible prompts were collected, the run described below demonstrated the review-queue training and evaluation path. The exporter requires both labels in both splits, and the trainer requires at least five review-validation prompts per class. With a 25% validation split, plan for at least 20 unique prompts per class; this is a minimum for the pipeline, not a guarantee of a reliable estimate.
-The encoder and B3 classifier remain unchanged; P6 alerts request human consideration rather than automatically running or promoting B4.
+Batch 4 retrains the binary classifier using the original NeurAlchemy training split together with new, human-labelled prompts from P7's review band. Reviewers label prompts as benign or malicious in the dashboard, and the reviewed examples are split into training and validation sets. Validation examples are not used to train the candidate. Using expert feedback as labelled data follows the model-update approach discussed by [Chen et al. (2023)](https://doi.org/10.1016/j.patter.2023.100780).
 
-Operational instructions are in the [developer guide](developer-guide.md#batch-4-reviewed-label-retraining).
+The candidate replaces the current classifier only if it improves macro-F1 on the reviewed validation prompts and does not reduce macro-F1 on any of the NeurAlchemy, deepset, or jackhhao promotion-gate datasets. MiniLM and the Batch 3 classifier remain unchanged. Retraining is run manually; P6 drift alerts prompt human consideration rather than automatically starting retraining or promoting a model.
 
 ### P1/P2: ingestion, preprocessing and source enrichment
 
@@ -90,7 +81,7 @@ For each incoming prompt within the model’s 256-token limit, the intake worker
 
 P3 compares the incoming embedding with two reference collections: malicious prompts from the NeurAlchemy training data and recent prompts that P4 predicted to be malicious with high confidence using cosine similarity. P3 returns the closest reference and its similarity score. A similar embedding-based cosine comparison is described in [PromptGuard: A structured framework for injection-resilient language models](https://www.nature.com/articles/s41598-025-31086-y) by Ahmed Alzahrani. The numerical similarity score is stored in PostgreSQL and used as a feature by P5’s anomaly detector.
 
-P4 applies the trained Batch 2 classifier to estimate whether the incoming prompt is benign or malicious. Combining pretrained text embeddings with traditional classifiers for jailbreak detection has also been explored by ([Galinkin and Sablotny, 2024](https://arxiv.org/abs/2412.01547)). When the maliciousness probability is at least 0.5, Batch 3 also predicts one of the six attack families using the same embedding.
+P4 applies the trained Batch 2 classifier to estimate whether the incoming prompt is benign or malicious. Combining pretrained text embeddings with traditional classifiers for jailbreak detection has also been explored by [Galinkin and Sablotny (2024)](https://arxiv.org/abs/2412.01547). When the maliciousness probability is at least 0.5, Batch 3 also predicts one of the six attack families using the same embedding.
 
 ### P5 streaming anomaly detection
 
@@ -136,13 +127,9 @@ Imported dataset prompts are sent through a replay tool to the same Kafka path a
 
 ## Testing and experiments
 
-### Existing automated checks
-
-Automated tests were added for API behavior, Kafka intake, preprocessing, source caching, dataset replay, routing, browser polling, and agent lifecycle handling. Complete flow tests use a deterministic model and agent fixtures with Kafka and PostgreSQL to check the routing outcomes and duplicate execution prevention.
-
 ### Model comparison results
 
-The batch 2 model achieved a macro-F1 of 0.94 on the NeurAlchemy test split. It also generalised better than Batch 1 to the external datasets, achieving macro-F1 scores of 0.66 on deepset and 0.62 on jackhhao. We therefore integrated it into P4 to supply the maliciousness score used by P7 for final routing. External performance remained a bit limited: its false-positive rates were approximately 36% and 63%, respectively.
+The Batch 2 model achieved a macro-F1 of 0.94 on the NeurAlchemy test split. It also generalised better than Batch 1 to the external datasets, achieving macro-F1 scores of 0.66 on deepset and 0.62 on jackhhao. We therefore integrated it into P4 to supply the maliciousness score used by P7 for final routing. External performance remained a bit limited: its false-positive rates were approximately 36% and 63%, respectively.
 
 The saved Batch 1 and Batch 2 external-test results are recorded in [evaluation.json](../../results/evaluation.json):
 
@@ -153,29 +140,6 @@ The saved Batch 1 and Batch 2 external-test results are recorded in [evaluation.
 
 Batch 3 achieved a macro-F1 of 0.76 on the NeurAlchemy test split.
 
-The historical Batch 4 run compared the pre-Batch-4 baseline and a candidate trained from a separate reviewed-label CSV on the same 60 validation prompts (30 benign and 30 malicious). That candidate was promoted without P7 queue provenance or the regression gates now required by the retraining workflow. It is not the active classifier: the repository artifacts have been restored to the pre-Batch-4 baseline. These validation figures are historical and do not establish that the candidate generalizes. The confusion matrices use true labels as rows and predictions as columns, ordered benign then malicious:
-
-| Model | Validation macro-F1 | Confusion matrix |
-| --- | ---: | --- |
-| Pre-Batch-4 baseline (active) | 0.6011 | `[[9, 21], [0, 30]]` |
-| Historical Batch 4 candidate (not active) | 0.8496 | `[[24, 6], [3, 27]]` |
-
-`backend/batch/models/batch4_runs/` stores reports, label counts, and candidate metrics. Promotion gate scores are model-selection results; they are not independent final estimates. The historical review-validation score reflects model selection on a small, uncertain sample and is not an unbiased estimate either.
-
-#### P7 review-queue Batch 4 trial (2026-11-24)
-
-Run `20261124T175300Z` used 4,391 original NeurAlchemy training prompts plus 31 human-labeled P7 prompts for fitting (4,422 total). Ten additional reviewed prompts were held out for validation (5 benign and 5 malicious). Candidate training macro-F1 was 0.9615. On the review holdout, current macro-F1 was 0.3333 and candidate macro-F1 was 0.6703; the candidate correctly classified 2 of 5 benign and all 5 malicious prompts. These validation numbers are highly uncertain because the set contains only ten prompts and was selected from P7's uncertainty band.
-
-| Promotion gate | Current macro-F1 | Candidate macro-F1 | Scored prompts | Excluded over 256 tokens | Result |
-| --- | ---: | ---: | ---: | ---: | --- |
-| NeurAlchemy test | 0.9440 | 0.9418 | 912 | 30 | Failed |
-| deepset | 0.6600 | 0.6600 | 541 | 5 | Passed |
-| jackhhao | 0.5092 | 0.5201 | 644 | 389 | Passed |
-
-The candidate failed the Neuralchemy regression gate because the tolerance is zero; it added two false negatives (26 to 28). It was not promoted. The run used `--no-promote`, which independently kept the active model unchanged. The [run report](../../backend/batch/models/batch4_runs/20261124T175300Z/report.json) contains the 41 prompt IDs, class counts, confusion matrices, and full gate results.
-
-The earlier [evaluation results](../../results/evaluation.json) report Jackhhao macro-F1 0.6206 on 1,033 prompts. The Batch 4 gate excluded 389 prompts over P4's 256-token limit and scored the remaining 644. These are different populations, so 0.6206 and 0.5092 are not directly comparable. The earlier result file does not record an equivalent per-prompt coverage filter; a same-population evaluation is needed to explain the score difference.
-
 ### Guard latency and throughput
 
 The guard latency and throughput were tested using the same 20 short NeurAlchemy test prompts (10 benign and 10 malicious) at target rates of 1 and 5 prompts per second. Latency was measured from just before publishing to Kafka until the recorded final guard decision, excluding agent execution. Throughput was completed decisions divided by the time from the first submission to the last decision, including the sending intervals. The following is a summary of the results:
@@ -185,11 +149,11 @@ The guard latency and throughput were tested using the same 20 short NeurAlchemy
 | Slow (target 1 prompt/s) | 20/20 | 277.11 | 195.68 | 505.36 | 1.03 |
 | Faster (target 5 prompts/s) | 20/20 | 301.78 | 323.53 | 387.99 | 4.63 |
 
-Both runs produced 9 allow, 10 block and 1 review decisions. The review was caused by a score in the uncertainty band; no measured prompt exceeded the token limit. Mean latency increased slightly in the faster run. These small tests show performance at the chosen traffic rates and do not establish maximum system capacity.
+Both runs produced 9 allow, 10 block and 1 review decisions. The review was caused by a score in the uncertainty band. Mean latency increased slightly in the faster run. These small tests show performance at the chosen traffic rates and do not establish maximum system capacity.
 
 ### Drift detection experiment
 
-P6 was evaluated with a three-phase replay of the Neuralchemy test split: 150 benign prompts for baseline, 150 more benign prompts for control, then 150 malicious prompts to shift the score stream. Replays ran at 5 prompts/s across 40 simulated sources to avoid source rate limiting. P6 used ADWIN with delta 0.002. Phase means below use valid persisted P4 malicious scores, the values P6 monitors.
+P6 was evaluated with a three-phase replay of the NeurAlchemy test split: 150 benign prompts for baseline, 150 more benign prompts for control, then 150 malicious prompts to shift the score stream. Replays ran at 5 prompts/s across 40 simulated sources to avoid source rate limiting. P6 used ADWIN with delta 0.002. Phase means below use valid persisted P4 malicious scores, the values P6 monitors.
 
 | Phase | Label | Prompts | Valid P4 scores | Mean score | Standard deviation | New alerts |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -203,7 +167,7 @@ P6 detected the shift at 12:39:25.822 UTC, 19.2 seconds after the first shifted 
 
 ### Burst detection and throttling experiment
 
-The burst test (`python -m Others.backend.tests.burst_experiment`, see the [developer guide](developer-guide.md#burst-detection-experiment)) ran against the full Compose stack with the default settings: the elastic windows of [Zhu & Shasha (2003)](https://doi.org/10.1145/956750.956789) with 6 prompts in 10 seconds, 10 in 60 seconds and 40 in 600 seconds, and a 300-second cooldown. A control IP first sent 5 prompts at 1 per second. Then a simulated attacker IP sent 20 prompts at 10 per second, about 2 seconds in total. The prompts were short calculator and course questions. The following is a summary of the results:
+The burst test ran against the full Compose stack with the default settings: the elastic windows of [Zhu & Shasha (2003)](https://doi.org/10.1145/956750.956789) with 6 prompts in 10 seconds, 10 in 60 seconds and 40 in 600 seconds, and a 300-second cooldown. A control IP first sent 5 prompts at 1 per second. Then a simulated attacker IP sent 20 prompts at 10 per second, about 2 seconds in total. The prompts were short calculator and course questions. The following is a summary of the results:
 
 | Source | Sent | P10 allowed | P10 blocked | First blocked prompt | Window that fired | Final blocks with a throttle reason | Mean P10 latency (ms) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -214,18 +178,17 @@ All prompts fell inside every window, so all three windows counted the attacker'
 
 ### Retraining before and after
 
-Batch 4 was trained using the repository's reviewed-label CSV, which had 140 rows (70 per label) and validated on 60 rows (30 per label). The candidate strictly improved over the baseline, so the pipeline promoted it and saved the run report, previous classifier, and previous config under `Others/Models/models/batch4_runs/promoted_20261121T121133Z/`. This validation result applies only to the reviewed sample and does not replace untouched test or external evaluation.
+Retraining is one way to adapt when data distributions change [Lu et al., 2019](https://doi.org/10.1109/TKDE.2018.2876857). We therefore compared the current classifier with a candidate trained using additional human-labelled prompts. This experiment used 4,391 original NeurAlchemy training prompts plus 31 human-labeled P7 prompts for fitting (4,422 total). Ten additional reviewed prompts were held out for validation (5 benign and 5 malicious). Candidate training macro-F1 was 0.9615. On the review holdout, current macro-F1 was 0.3333 and candidate macro-F1 was 0.6703; the candidate correctly classified 2 of 5 benign and all 5 malicious prompts. These validation numbers are highly uncertain because the set contains only ten prompts and was selected from P7's uncertainty band.
 
-The confusion matrices below use true labels as rows and predicted labels as columns, ordered benign then malicious:
+| Promotion gate | Current macro-F1 | Candidate macro-F1 | Scored prompts | Excluded over 256 tokens | Result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| NeurAlchemy test | 0.9440 | 0.9418 | 912 | 30 | Failed |
+| deepset | 0.6600 | 0.6600 | 541 | 5 | Passed |
+| jackhhao | 0.5092 | 0.5201 | 644 | 389 | Passed |
 
-| Model | Validation macro-F1 | Confusion matrix |
-| --- | ---: | --- |
-| Current | 0.6011 | `[[9, 21], [0, 30]]` |
-| Batch 4 candidate (promoted) | 0.8496 | `[[24, 6], [3, 27]]` |
+The candidate missed two more malicious prompts than the existing model, slightly reducing NeurAlchemy macro-F1. It therefore failed the promotion check. The experiment also used `--no-promote`, so the active model would have remained unchanged regardless of the results.
 
-`Others/Models/models/batch4_runs/` is where the reports, including label counts and candidate training metrics are located. Because the reviewed set is small, the promotion metric reflects model selection and should not be treated as an unbiased final test estimate.
-
-When data distributions change, concept-drift research treats retraining as one way to adapt ([Lu et al., 2019](https://doi.org/10.1109/TKDE.2018.2876857)). P6's score-distribution alert does not trigger retraining automatically. The earlier Batch 4 promotion rule compared only a selected review sample; the updated workflow also gates candidates on untouched NeurAlchemy and external evaluations.
+The Batch 4 comparison excludes prompts longer than 256 tokens. Its scores therefore differ from the earlier evaluation, which included all prompts. Both the existing and candidate models are evaluated on the same eligible prompts to make the comparison fair. These results help decide whether to promote the candidate; they are not a separate final test of generalisation.
 
 ## References
 

@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import confusion_matrix, f1_score, precision_recall_fscore_support
 
-BACKEND_DIR = Path(__file__).resolve().parents[2] / "backend"
+BACKEND_DIR = Path(__file__).resolve().parents[4] / "backend"
 sys.path.insert(0, str(BACKEND_DIR))
 
 from db import connect  # noqa: E402
@@ -29,7 +29,7 @@ CLASS_ORDER = (
     "jailbreak_persona",
     "obfuscation",
 )
-MODEL_DIR = Path(__file__).resolve().parent / "models" / "batch3"
+MODEL_DIR = Path(__file__).resolve().parent
 SPLITS = ("train", "validation", "test")
 
 

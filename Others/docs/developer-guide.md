@@ -628,8 +628,8 @@ The schema and foreign keys are shown in [database-schema.dbml](database-schema.
 For the full batch/notebook environment, use Python 3.13+ and uv:
 ```sh
 uv sync --project Others/Models --locked
-uv run --project Others/Models --locked python Others/Models/import_neuralchemy.py
-uv run --project Others/Models --locked python Others/Models/import_external_datasets.py
+uv run --project Others/Models --locked python Others/Models/data/import_neuralchemy.py
+uv run --project Others/Models --locked python Others/Models/data/import_external_datasets.py
 ```
 
 Import commands download their datasets and use the root `.env`. NeurAlchemy baseline
@@ -645,7 +645,7 @@ are imported:
 
 
 ```sh
-uv run --project Others/Models --locked python Others/Models/train_batch3.py
+uv run --project Others/Models --locked python Others/Models/models/batch3/train_batch3.py
 ```
 
 B3 uses the imported six-way `attack_group` labels for malicious NeurAlchemy rows,
