@@ -21,14 +21,14 @@ import numpy as np
 from dotenv import load_dotenv
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import confusion_matrix, f1_score
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 from backend import db
 from backend.stream.router import validate_policy
 
-BACKEND_DIR = Path(__file__).resolve().parents[2] / "backend"
+BACKEND_DIR = Path(__file__).resolve().parents[4] / "backend"
 PROJECT_DIR = BACKEND_DIR.parent
-MODEL_DIR = Path(__file__).resolve().parent / "models"
+MODEL_DIR = Path(__file__).resolve().parents[1]
 CURRENT_DIR = MODEL_DIR / "batch2"
 RUNS_DIR = MODEL_DIR / "batch4_runs"
 sys.path.insert(0, str(BACKEND_DIR))

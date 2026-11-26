@@ -8,7 +8,7 @@ import pandas as pd
 from datasets import load_dataset
 from dotenv import load_dotenv
 
-BACKEND_DIR = Path(__file__).resolve().parents[2] / "backend"
+BACKEND_DIR = Path(__file__).resolve().parents[3] / "backend"
 sys.path.insert(0, str(BACKEND_DIR))
 
 from db import connect

@@ -63,7 +63,7 @@ def load_external_data(database_url):
     if empty:
         raise ValueError(
             "No external_test rows found for: " + ", ".join(empty)
-            + ". Run Others/Models/import_external_datasets.py first."
+            + ". Run Others/Models/data/import_external_datasets.py first."
         )
     for name, samples in datasets.items():
         labels = {sample["label"] for sample in samples}

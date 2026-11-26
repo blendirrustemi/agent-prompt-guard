@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score
 
-BACKEND_DIR = Path(__file__).resolve().parents[2] / "backend"
+BACKEND_DIR = Path(__file__).resolve().parents[4] / "backend"
 sys.path.insert(0, str(BACKEND_DIR))
 
 from db import connect
@@ -21,7 +21,7 @@ from db import connect
 ENCODER_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 BATCH_SIZE = 32
 NORMALIZE_EMBEDDINGS = True
-MODEL_DIR = Path(__file__).resolve().parent / "models" / "batch2"
+MODEL_DIR = Path(__file__).resolve().parent
 
 
 def load_baseline_data(database_url):

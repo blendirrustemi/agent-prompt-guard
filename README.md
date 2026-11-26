@@ -14,7 +14,8 @@ and routes each prompt to **allow**, **block**, or **review** before agent execu
 dependencies, saved model snapshots, and historical Batch 4 runs. Its training scripts
 write to `Others/Models/models/`; the active guard models remain in `backend/batch/models/`.
 The current P7 review export and Batch 4 retraining workflow remain in `backend/batch/`.
-Supporting files retain their original folder structure inside `Others/`.
+Restored training scripts sit alongside their models in `Others/Models/models/batch1/` through `batch4/`;
+exploration notebooks and import scripts are in `Others/Models/data/`.
 Local environments, configuration, PostgreSQL data, and model caches stay in place.
 `Others/` is excluded from Docker builds.
 
@@ -22,7 +23,6 @@ Local environments, configuration, PostgreSQL data, and model caches stay in pla
 
 - **[Project report](Others/docs/project_report.md)** - introduction, datasets, system architecture, and testing/experiment sections.
 - **[Developer guide](Others/docs/developer-guide.md)** - detailed setup, APIs, event contracts, configuration, dataset replay, and troubleshooting; includes restored batch tools and historical instructions for removed tests and the demo stub.
-- **[Folder guide](Others/docs/folder-guide.md)** - explains what each folder contains.
 - **[Research-paper notes](Others/docs/research-papers.md)** - research papers used in this project and referenced in the project report.
 - **[Team work plan](Others/docs/work-plan.xlsx)** - planned tasks and assigned team members.
 
@@ -125,7 +125,7 @@ Use Python **3.13+** and **uv** for the restored batch/notebook environment:
 
 ```sh
 uv sync --project Others/Models --locked
-uv run --project Others/Models --locked python Others/Models/import_neuralchemy.py
+uv run --project Others/Models --locked python Others/Models/data/import_neuralchemy.py
 uv run --project Others/Models --locked python -m Others.Models.evaluation --output Others/Models/evaluation.json
 ```
 
