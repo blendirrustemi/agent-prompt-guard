@@ -18,6 +18,31 @@ DASHBOARD = Path(__file__).resolve().parents[1] / "dashboard"
 T0 = datetime(2026, 11, 21, 14, 30, tzinfo=timezone.utc)
 
 
+def blendi_query(sql, params=()):
+    if "AS preprocessed" in sql:
+        return pd.DataFrame([{"prompts": 4, "replayed": 1, "preprocessed": 3}])
+    if "date_bin" in sql:
+        bucket_end = T0 + timedelta(seconds=params[0])
+        return pd.DataFrame([
+            {"bucket": T0, "bucket_end": bucket_end, "intake": "Live submission", "prompts": 3},
+            {"bucket": T0, "bucket_end": bucket_end, "intake": "Dataset replay", "prompts": 1},
+        ])
+    if 'AS "Preprocessed"' in sql:
+        return pd.DataFrame([
+            {"Prompt time": T0, "Prompt ID": "recent", "Source": "192.0.2.1",
+             "Preprocessed": True, "Characters": 12, "Words": 2, "Symbol ratio": 0.25},
+            {"Prompt time": T0, "Prompt ID": "older", "Source": "192.0.2.2",
+             "Preprocessed": False, "Characters": None, "Words": None, "Symbol ratio": None},
+        ])
+    if "DISTINCT ON (source)" in sql:
+        return pd.DataFrame([
+            {"source": "192.0.2.1", "snapshot_at": T0, "allow_count": 4, "block_count": 1, "review_count": 0},
+            {"source": "192.0.2.2", "snapshot_at": T0 - timedelta(minutes=1),
+             "allow_count": 0, "block_count": 0, "review_count": 2},
+        ])
+    raise AssertionError(f"Unexpected dashboard query: {sql}")
+
+
 def burst_query(sql, params=()):
     if "AS active" in sql:
         return pd.DataFrame([{"active": 1}])
@@ -96,6 +121,8 @@ def shahed_empty_query(sql, params=()):
 
 
 def empty_query(sql, params=()):
+    if "AS preprocessed" in sql:
+        return pd.DataFrame([{"prompts": 0, "replayed": 0, "preprocessed": 0}])
     if "AS runs" in sql:
         return pd.DataFrame([{"runs": 0, "completed": 0, "with_tools": 0, "mean_latency_ms": None}])
     if "count(DISTINCT source) AS sources" in sql:
@@ -122,11 +149,30 @@ class DashboardTests(unittest.TestCase):
         # The element name differs between Streamlit versions.
         return app.get("vega_lite_chart") + app.get("arrow_vega_lite_chart")
 
-    def test_navigation_lists_every_member(self):
+    def test_navigation_opens_blendi_dashboard(self):
         app = AppTest.from_file(str(DASHBOARD / "app.py"), default_timeout=30)
-        app.run()
+        with patch("backend.dashboard.data.query", side_effect=blendi_query):
+            app.run()
         self.assertEqual(len(app.exception), 0, [e.value for e in app.exception])
-        self.assertIn("Blendi", app.info[0].value)
+        self.assertEqual(app.title[0].value, "Prompt intake & source context (P1/P2)")
+
+    def test_blendi_page_shows_intake_and_switches_source_context(self):
+        app = self.run_page("blendi.py", blendi_query)
+        self.assertEqual([metric.value for metric in app.metric], ["4", "3", "1", "75.0%", "4", "1", "0"])
+        self.assertEqual(len(self.charts(app)), 1)
+        recent = app.dataframe[0].value
+        self.assertEqual(recent["Preprocessed"].tolist(), [True, False])
+        self.assertTrue(pd.isna(recent.iloc[1]["Symbol ratio"]))
+        with patch("backend.dashboard.data.query", side_effect=blendi_query):
+            app.selectbox(key="blendi_source").select("192.0.2.2").run()
+        self.assertEqual(len(app.exception), 0, [e.value for e in app.exception])
+        self.assertEqual([metric.value for metric in app.metric[-3:]], ["0", "0", "2"])
+        self.assertIn("14:29:00 UTC", app.caption[-1].value)
+        with patch("backend.dashboard.data.query", side_effect=blendi_query) as query:
+            app.selectbox(key="blendi_time_range").select("All time").run()
+        self.assertEqual(len(app.exception), 0, [e.value for e in app.exception])
+        volume_params = [call.args[1] for call in query.call_args_list if "date_bin" in call.args[0]]
+        self.assertEqual(volume_params, [(604800, datetime(1970, 1, 1, tzinfo=timezone.utc), 604800)])
 
     def test_emma_page_shows_both_datasets_without_database_queries(self):
         import streamlit as st
@@ -215,14 +261,14 @@ class DashboardTests(unittest.TestCase):
         self.assertTrue(app.info)
 
     def test_empty_data_shows_a_hint(self):
-        for page in ("nandor_burst.py", "nandor_agent_tools.py", "shahed_attack_patterns.py"):
+        for page in ("blendi.py", "nandor_burst.py", "nandor_agent_tools.py", "shahed_attack_patterns.py"):
             with self.subTest(page=page):
                 app = self.run_page(page, empty_query)
                 self.assertEqual(len(self.charts(app)), 0)
                 self.assertTrue(app.info)
 
     def test_database_error_is_shown(self):
-        for page in ("nandor_burst.py", "nandor_agent_tools.py", "shahed_attack_patterns.py"):
+        for page in ("blendi.py", "nandor_burst.py", "nandor_agent_tools.py", "shahed_attack_patterns.py"):
             with self.subTest(page=page):
                 app = self.run_page(page, database_down)
                 self.assertIn("Could not read PostgreSQL", app.error[0].value)

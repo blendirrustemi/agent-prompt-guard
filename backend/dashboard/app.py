@@ -1,8 +1,7 @@
 """PIJD dashboards. Each project member has a sidebar section with their own pages.
 
 Run from the project root: streamlit run backend/dashboard/app.py
-To add a page: create backend/dashboard/views/<name>.py (use backend.dashboard.data.frame for
-PostgreSQL), then replace your placeholder below with st.Page("views/<name>.py", title=...).
+To add a page, create backend/dashboard/views/<name>.py and register it below with st.Page.
 """
 
 import sys
@@ -17,23 +16,12 @@ import streamlit as st  # noqa: E402
 from backend.dashboard import data  # noqa: E402
 
 
-def placeholder(member, stages, slug):
-    def page():
-        st.title(f"{member}: {stages}")
-        st.info(
-            f"{member}'s dashboard has not been added yet. Create `backend/dashboard/views/{slug}.py`, "
-            "read data with `backend.dashboard.data.frame(sql, params)`, and register the page in "
-            "`backend/dashboard/app.py` in place of this placeholder."
-        )
-
-    page.__name__ = f"{slug}_placeholder"
-    return st.Page(page, title=f"{stages} dashboard", url_path=slug)
-
-
 st.set_page_config(page_title="PIJD dashboards", layout="wide")
 
 pages = {
-    "Blendi (P1–P2)": [placeholder("Blendi", "P1–P2 ingestion and IP join", "blendi")],
+    "Blendi (P1–P2)": [
+        st.Page("views/blendi.py", title="Prompt intake & source context", url_path="blendi"),
+    ],
     "Emma (P3–P4)": [
         st.Page("views/emma_model_evaluation.py", title="Model evaluation", url_path="emma")
     ],
