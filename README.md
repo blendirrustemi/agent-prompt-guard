@@ -8,7 +8,7 @@ and routes each prompt to **allow**, **block**, or **review** before agent execu
 
 `backend/` and `frontend/` contain the application and its active Batch 2/3 models.
 `results/evaluation.json` supplies the saved results for the model-evaluation dashboard.
-`backend/tests/` contains the dashboard and Batch 4 review-workflow tests.
+`backend/tests/` contains the dashboard and Batch 4 review-workflow tests, plus the manual guard latency benchmark.
 `Others/` contains documentation, experiment results, and old temporary files.
 `Others/Models/` restores the batch data, notebooks, import/evaluation tools, training scripts,
 dependencies, saved model snapshots, and historical Batch 4 runs. Its training scripts
