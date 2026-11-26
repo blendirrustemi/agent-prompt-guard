@@ -85,7 +85,7 @@ Defines elastic bursts: a stream is monitored over several sliding-window sizes 
 **Source:** [arXiv:2210.03629](https://arxiv.org/abs/2210.03629).
 
 Introduces agents that interleave reasoning with actions, such as tool or API calls, and use each result to decide the next step. Acting on looked-up information reduces hallucination. Our agent follows this loop: LangChain's `create_agent` lets the model call `calculator` or `lookup_course_info`, reads the result, and continues until it can answer. The agent tool-use dashboard counts these actions per tool.
-## 7. Perspectives on Incorporating Expert Feedback into Model Updates (2023)
+## 9. Perspectives on Incorporating Expert Feedback into Model Updates (2023)
 
 **Authors:** Valerie Chen, Umang Bhatt, Hoda Heidari, Adrian Weller, and Ameet Talwalkar.
 
@@ -100,7 +100,7 @@ Introduces agents that interleave reasoning with actions, such as tool or API ca
 
 This paper discusses ways to incorporate expert feedback into model updates, including updates to training data. It provides context for Batch 4's use of reviewed labels. Our CSV workflow, validation comparison, and promotion rule are project-specific; the paper does not evaluate this implementation.
 
-## 8. A Meta-level Analysis of Online Anomaly Detectors (2023)
+## 10. A Meta-level Analysis of Online Anomaly Detectors (2023)
 
 **Authors:** Antonios Ntroumpogiannis, Michail Giannoulis, Nikolaos Myrtakis, Vassilis Christophides, Eric Simon, and Ioannis Tsamardinos.
 
@@ -115,7 +115,7 @@ This paper discusses ways to incorporate expert feedback into model updates, inc
 
 This study compares online anomaly detectors across algorithm families and data characteristics, including tree-based methods. It provides background for selecting an online detector.
 
-## 9. River: Machine Learning for Streaming Data in Python (2021)
+## 11. River: Machine Learning for Streaming Data in Python (2021)
 
 **Authors:** Jacob Montiel, Max Halford, Saulo Martiello Mastelini, Geoffrey Bolmier, Raphael Sourty, Robin Vaysse, Adil Zouitine, Heitor Murilo Gomes, Jesse Read, Talel Abdessalem, and Albert Bifet.
 
@@ -131,7 +131,7 @@ This study compares online anomaly detectors across algorithm families and data 
 
 River is the Python library used by P5 and P6 for streaming-learning algorithms. This paper describes the library; the project's feature design, settings, and use of P4 scores with ADWIN are implementation choices.
 
-## 10. Scalable Detection of Concept Drifts on Data Streams with Parallel Adaptive Windowing (2018)
+## 12. Scalable Detection of Concept Drifts on Data Streams with Parallel Adaptive Windowing (2018)
 
 **Authors:** Philipp M. Grulich, René Saitenmacher, Jonas Traub, Sebastian Breß, Tilmann Rabl, and Volker Markl.
 
