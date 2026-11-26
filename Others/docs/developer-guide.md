@@ -676,7 +676,7 @@ dashboard container after rebuilding the shared image and recreating the contain
 With the guard services running and NeurAlchemy imported, run from the project root:
 
 ```sh
-python -m Others.backend.tests.guard_benchmark
+python -m backend.tests.guard_benchmark
 ```
 
 This sends three warm-up prompts, then the same 20 short NeurAlchemy test prompts
@@ -694,12 +694,12 @@ the duration from the first submission to the last final decision, including sen
 intervals. These small runs measure performance at the stated rates, not maximum capacity.
 The benchmark is run manually; its filename does not match automated `test_*.py` discovery.
 
-To run inside Docker without installing host Python dependencies, copy the current
-script into an existing consumer container and export the summary to the project root:
+To run inside Docker without installing host Python dependencies, copy the restored
+script into an existing consumer container and copy the summary back to `Others/results/`:
 
 ```sh
-docker compose --env-file .env -f backend/compose.yaml cp Others consumer:/app/Others
-docker compose --env-file .env -f backend/compose.yaml exec -T consumer python -m Others.backend.tests.guard_benchmark --output /app/guard_latency_summary.csv
+docker compose --env-file .env -f backend/compose.yaml cp backend/tests/guard_benchmark.py consumer:/app/backend/tests/guard_benchmark.py
+docker compose --env-file .env -f backend/compose.yaml exec -T consumer python -m backend.tests.guard_benchmark --output /app/guard_latency_summary.csv
 docker compose --env-file .env -f backend/compose.yaml cp consumer:/app/guard_latency_summary.csv Others/results/
 ```
 
