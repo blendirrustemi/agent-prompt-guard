@@ -708,7 +708,7 @@ docker compose --env-file .env -f backend/compose.yaml cp consumer:/app/guard_la
 With the guard services running (burst worker, consumer and router), run from the project root:
 
 ```sh
-python -m Others.backend.tests.burst_experiment
+python -m backend.tests.burst_experiment
 ```
 
 A control source first sends 5 prompts at 1 per second. Then an attacker source sends 20 prompts
@@ -742,11 +742,10 @@ reason and latency, P7 decision and reason, P4 score) and `Others/results/burst_
 Allowed prompts follow the normal agent path if the agent worker is running.
 Like the latency benchmark, it is run manually and is not picked up by `test_*.py` discovery.
 
-To run inside Docker, copy the supporting files into the consumer container and export the results:
+To run inside Docker (the script is part of the image) and export the results:
 
 ```sh
-docker compose --env-file .env -f backend/compose.yaml cp Others consumer:/app/Others
-docker compose --env-file .env -f backend/compose.yaml exec -T consumer python -m Others.backend.tests.burst_experiment --output-dir /app/burst_results
+docker compose --env-file .env -f backend/compose.yaml exec -T consumer python -m backend.tests.burst_experiment --output-dir /app/burst_results
 docker compose --env-file .env -f backend/compose.yaml cp consumer:/app/burst_results/burst_experiment_prompts.csv Others/results/
 docker compose --env-file .env -f backend/compose.yaml cp consumer:/app/burst_results/burst_experiment_summary.csv Others/results/
 ```
@@ -773,7 +772,7 @@ Implemented pages:
 | Nándor: Agent tool use | Calls per tool (`calculator`, `lookup_course_info`) plus completed runs that used no tool. Metrics: runs, completed, share using a tool, mean latency. | `agent_runs.tool_calls` |
 
 Both pages have a time-range selector, and the burst page lets you pick sources (default: the 8 most active).
-Run `python -m Others.backend.tests.burst_experiment` to generate burst data to look at.
+Run `python -m backend.tests.burst_experiment` to generate burst data to look at.
 
 To add your page:
 
